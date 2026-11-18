@@ -269,7 +269,7 @@ height, base-row spacing and lift range.
 
 ### 4. Place the cup in the pyramid
 
-**Owner:** Dev
+**Owner:** Dan
 
 - [ ] **4.1 Define the 3-2-1 layout relative to the tape**
   - 3 base cups at fixed spots along one tape edge (spacing is a parameter).
