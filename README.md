@@ -162,6 +162,10 @@ code that still needs the improvements listed under them.
 - The stacking area is marked with blue tape.
 - Must work in the MuJoCo sim and on the real Stretch.
 - Real cup size is still unknown, so all cup measurements are parameters.
+- Navigation uses the course starter package
+  [`parcs_stretch_nav2`](https://github.com/NU-PARCS/parcs_stretch_nav2_WVH): Nav2 with
+  AMCL localization on a saved map of WVH (plus a keepout map) and a Python
+  `BasicNavigator` API (`goToPose`, `followWaypoints`, ...).
 
 **Open item:** real cup dimensions (height, rim and base diameter). These set the grasp
 height, base-row spacing and lift range.
@@ -170,6 +174,9 @@ height, base-row spacing and lift range.
 
 - [ ] **0.1 Split `cup_finder_controller.py` into reusable pieces**: drive/arm helpers,
       ALIGN and depth measurement, so later steps can share them.
+  - Consider using `hello_helpers`' `HelloNode.move_to_pose(..., blocking=True)` for arm,
+    head and gripper moves (as the starter's `move_robot.py` does) instead of our own
+    trajectory action client. It is the standard API on the real robot.
 - [ ] **0.2 Parameter files for sim and real robot** (`sim.yaml`, `robot.yaml`)
   - Move sim-only workarounds there: larger base speed commands, re-commanding joints
     for the sim's 5 cm trajectory tolerance, long settle waits.
@@ -185,6 +192,14 @@ height, base-row spacing and lift range.
   - Fix or relax the `colcon test` lint failures.
 - [ ] **0.6 Real-robot safety**: slow speeds, an easy way to stop, a way to run each
       step on its own.
+- [ ] **0.7 Add `parcs_stretch_nav2` to the workspace**: clone it into `src/` next to
+      this repo, build it, and document it in the setup steps above.
+  - Its `simple_commander_demo.py` imports `parcs_parcs_stretch_nav2.robot_navigator`
+    (doubled prefix), so it fails as shipped; use `parcs_stretch_nav2.robot_navigator`.
+- [ ] **0.8 Navigation in the sim**: the starter's launch files skip the driver and lidar
+      when `use_sim_time:=true`, and its map is of WVH, not the sim scene.
+  - Check that the MuJoCo sim publishes a lidar scan Nav2 can use.
+  - Make a map of the sim scene with `offline_mapping.launch.py`.
 
 ### 1. Find the cup and pick it up
 
@@ -194,9 +209,18 @@ height, base-row spacing and lift range.
   - Use depth to separate cups that touch.
   - Pick the closest loose cup, not the biggest red blob.
 - [ ] **1.2 Search when no cup is in view**: pan the head, or turn and drive.
-- [ ] **1.3 Drive to the cup's general area** (partial: `sim/cup_approach.py`, standalone)
-  - Current code assumes the cup is already beside the robot on its arm side.
-  - Port the table-circling logic from `cup_approach.py` to ROS; fix arm-facing parking.
+- [ ] **1.3 Drive to the cup's general area** (partial: Nav2 from the starter package)
+  - Save a pose near the cup table in the map frame and drive there with
+    `BasicNavigator.goToPose`, with the arm side facing the table.
+  - Stow the arm first (the starter recommends it, and Nav2's footprint assumes it).
+  - `sim/cup_approach.py` is no longer needed for this; keep it only as a standalone
+    sim test.
+- [ ] **1.3b Hand off from Nav2 to ALIGN**
+  - Nav2 stops within 25 cm and 0.25 rad (about 14°) of the goal
+    (`xy_goal_tolerance`, `yaw_goal_tolerance`), so the camera has to finish the job.
+  - ALIGN only drives forward and back; add a step that turns the robot square to the
+    table edge (seen in depth) before aligning.
+  - Switch the driver from navigation mode to position mode for arm moves, and back.
 - [x] **1.4 Center the cup and line it up with the arm** (about ±1 cm; slow in the sim)
 - [x] **1.5 Measure the cup and table, check the reach is safe**
   - [ ] Add a cup height measurement as a cross-check against the parameters.
@@ -213,16 +237,21 @@ height, base-row spacing and lift range.
 ### 2. Drive to the stacking area with the cup
 
 - [ ] **2.1 Detect the blue tape**: color threshold, depth for 3D corners, then the
-      area's center and direction.
-- [ ] **2.2 Know where the robot is**: odometry, corrected with the tape once in view
-      (required on the real robot).
-- [ ] **2.3 Plan and follow a path to the area** (partial: builds on the 1.3 port)
-- [ ] **2.4 Avoid obstacles**: stop when depth or lidar sees something close; the robot
-      is wider while carrying a cup.
+      area's center and direction. Used only for the final approach; Nav2 gets the robot
+      close.
+- [ ] **2.2 Know where the robot is** (partial: AMCL in the starter package)
+  - Set the initial pose in code (`setInitialPose`) instead of clicking in RViz.
+  - Save named poses (cup table, stacking area) in the map frame in a config file.
+- [ ] **2.3 Plan and follow a path to the area** (partial: Nav2 `goToPose`)
+- [ ] **2.4 Avoid obstacles** (partial: Nav2 costmaps with lidar and the keepout map)
+  - Nav2 uses `robot_radius: 0.22`, which assumes the arm is stowed. Make sure the
+    carry pose keeps the cup inside that footprint, or enlarge it while carrying.
 - [ ] **2.5 Check the cup is still held while driving**: watch gripper effort, stop if
       it drops.
 - [ ] **2.6 Park lined up with the next pyramid spot** (partial: reuse ALIGN with the
       spot as the target)
+  - Same Nav2-to-ALIGN hand-off as 1.3b, squaring up to the tape instead of the table
+    edge.
 
 ### 3. Flip the cup
 
