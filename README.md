@@ -4,6 +4,8 @@ ROS 2 Humble code for Hello Robot's Stretch, run in the Stretch MuJoCo simulator
 The `stack_cups` package finds a red cup with the head camera, lines the robot up
 with it, and reaches the gripper to it, using depth to avoid hitting the table.
 
+See the [Roadmap](#roadmap) for what is done and what is left.
+
 ## Workspace layout
 
 Clone this repo next to Hello Robot's `stretch_ros2` in the same `src/` folder:
@@ -148,3 +150,111 @@ ones from the `sim/` folder with `python3 <script>`.
 | `Permission denied` reading files during `colcon build` from a VM shared folder | Files are readable only by their owner on the host. On the Mac: `chmod -R go+rX <workspace>/src`. If the build fails, `ros2 run` silently runs the old installed version. |
 | Viewer black/glitchy or very slow | Log in to Ubuntu on Xorg (not Wayland), enable GPU acceleration in the VM, give the VM more CPU cores, and use `use_mujoco_viewer:=false`. |
 | `colcon test` lint failures | The ROS lint config wants single quotes and Google import order; the code currently uses double quotes (black style). Either reformat or relax the lint tests. |
+
+## Roadmap
+
+Check items off here as they are finished. Items marked **(partial)** have working
+code that still needs the improvements listed under them.
+
+**Requirements**
+- Build a flipped 3-2-1 pyramid: 6 red cups, rim down.
+- Loose cups start upright, outside the stacking area.
+- The stacking area is marked with blue tape.
+- Must work in the MuJoCo sim and on the real Stretch.
+- Real cup size is still unknown, so all cup measurements are parameters.
+
+**Open item:** real cup dimensions (height, rim and base diameter). These set the grasp
+height, base-row spacing and lift range.
+
+### 0. Setup and shared work
+
+- [ ] **0.1 Split `cup_finder_controller.py` into reusable pieces**: drive/arm helpers,
+      ALIGN and depth measurement, so later steps can share them.
+- [ ] **0.2 Parameter files for sim and real robot** (`sim.yaml`, `robot.yaml`)
+  - Move sim-only workarounds there: larger base speed commands, re-commanding joints
+    for the sim's 5 cm trajectory tolerance, long settle waits.
+  - Include all cup measurements; placeholder is a typical 16 oz cup (~12 cm tall,
+    ~9.5 cm rim).
+- [ ] **0.3 Check the real robot's topics and frames**: camera topics,
+      `/stretch/joint_states`, `/stretch/cmd_vel`, mode-switching services.
+- [ ] **0.4 Sim scene for the full task**: table, 6 tapered red cups standing upright,
+      blue tape strips marking the stacking area.
+- [ ] **0.5 Tests**
+  - Unit tests for `perception.py`, pyramid spot math and tape detection, using images
+    saved from both the sim and the real robot.
+  - Fix or relax the `colcon test` lint failures.
+- [ ] **0.6 Real-robot safety**: slow speeds, an easy way to stop, a way to run each
+      step on its own.
+
+### 1. Find the cup and pick it up
+
+- [ ] **1.1 Detect loose cups** (partial: red detection works)
+  - Make the red thresholds parameters and tune them for real lighting.
+  - Ignore red cups inside the taped area (already placed).
+  - Use depth to separate cups that touch.
+  - Pick the closest loose cup, not the biggest red blob.
+- [ ] **1.2 Search when no cup is in view**: pan the head, or turn and drive.
+- [ ] **1.3 Drive to the cup's general area** (partial: `sim/cup_approach.py`, standalone)
+  - Current code assumes the cup is already beside the robot on its arm side.
+  - Port the table-circling logic from `cup_approach.py` to ROS; fix arm-facing parking.
+- [x] **1.4 Center the cup and line it up with the arm** (about ±1 cm; slow in the sim)
+- [x] **1.5 Measure the cup and table, check the reach is safe**
+  - [ ] Add a cup height measurement as a cross-check against the parameters.
+- [ ] **1.6 Move the gripper to the cup** (partial: works)
+  - Grasp at a set height on the cup (from parameters), not the cup's center.
+- [ ] **1.7 Close the gripper by effort** (partial: closes to a fixed position)
+  - Hold firmly without crushing real cups.
+- [ ] **1.8 Check the grasp worked**: gripper position/effort, or the cup is gone from
+      the table.
+- [ ] **1.9 Lift and retract into the carry pose**: clear the table, arm in, wrist
+      tucked, cup upright.
+- [ ] **1.10 Retry on a failed grasp**: open, back off, repeat ALIGN and REACH.
+
+### 2. Drive to the stacking area with the cup
+
+- [ ] **2.1 Detect the blue tape**: color threshold, depth for 3D corners, then the
+      area's center and direction.
+- [ ] **2.2 Know where the robot is**: odometry, corrected with the tape once in view
+      (required on the real robot).
+- [ ] **2.3 Plan and follow a path to the area** (partial: builds on the 1.3 port)
+- [ ] **2.4 Avoid obstacles**: stop when depth or lidar sees something close; the robot
+      is wider while carrying a cup.
+- [ ] **2.5 Check the cup is still held while driving**: watch gripper effort, stop if
+      it drops.
+- [ ] **2.6 Park lined up with the next pyramid spot** (partial: reuse ALIGN with the
+      spot as the target)
+
+### 3. Flip the cup
+
+- [ ] **3.1 Check the wrist can turn 180°**: check `joint_wrist_roll` limits in the URDF
+      and on the real robot. If not, combine pitch and roll, or grasp at a roll angle
+      that leaves room to turn.
+- [ ] **3.2 Flip at the stacking area**: arm retracted and raised clear of the pyramid,
+      just before placing.
+- [ ] **3.3 Check the grip after flipping**: a flipped cup can slide toward its narrow
+      end and fall out.
+- [ ] **3.4 Test flipping on the real robot early**: riskiest step; the sim may not
+      model a plastic cup slipping well.
+
+### 4. Place the cup in the pyramid
+
+- [ ] **4.1 Define the 3-2-1 layout relative to the tape**
+  - 3 base cups at fixed spots along one tape edge (spacing is a parameter).
+  - 2 middle cups, each centered between two base cups.
+  - 1 top cup, centered between the two middle cups.
+- [ ] **4.2 See the current pyramid**: find every cup inside the tape (upside down
+      confirms it's placed), sort into rows by height, compare against the 6 spots.
+- [ ] **4.3 Choose the next spot**
+  - Fill base, then middle, then top.
+  - Base cups go on the table; upper cups go between the measured positions of the two
+    cups below, at the measured height of their tops.
+- [ ] **4.4 Plan the placement** (partial: extend `plan_reach`)
+  - Add the grasp-point-to-rim distance and a clearance margin.
+  - Check the top cup is within the lift's range.
+  - Upper rows need about ±1 cm accuracy.
+- [ ] **4.5 Move above the spot and lower slowly**: keep the arm above placed cups while
+      extending; reuse `move_joint_precise`.
+- [ ] **4.6 Release and back away**: open gently, raise straight up, retract.
+- [ ] **4.7 Check the placement**: new cup in place, cups below unmoved; stop and report
+      if something fell.
+- [ ] **4.8 Loop for the next cup** until all 6 are placed.
