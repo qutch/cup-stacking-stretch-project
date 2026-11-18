@@ -203,6 +203,8 @@ height, base-row spacing and lift range.
 
 ### 1. Find the cup and pick it up
 
+**Owner:** Hutch
+
 - [ ] **1.1 Detect loose cups** (partial: red detection works)
   - Make the red thresholds parameters and tune them for real lighting.
   - Ignore red cups inside the taped area (already placed).
@@ -266,6 +268,8 @@ height, base-row spacing and lift range.
       model a plastic cup slipping well.
 
 ### 4. Place the cup in the pyramid
+
+**Owner:** Dev
 
 - [ ] **4.1 Define the 3-2-1 layout relative to the tape**
   - 3 base cups at fixed spots along one tape edge (spacing is a parameter).
