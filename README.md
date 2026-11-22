@@ -62,7 +62,12 @@ team's ROS2 setup guide (PDF), steps 8-10. The parts that are easy to get wrong:
    sudo pip3 install --force-reinstall --no-cache-dir \
        "numpy==1.23.3" "numba==0.56.4" "llvmlite==0.39.1"     # always last
    ```
-5. **Build:**
+5. **Simulator patches:** fixes to `stretch_mujoco` and `stretch_ros2` that make the sim run
+   in real time and make arm moves accurate (see [Simulator patches](#simulator-patches)):
+   ```bash
+   ~/ws/src/cup-stacking-stretch-project/sim/patches/apply_patches.sh
+   ```
+6. **Build:**
    ```bash
    cd ~/ws && source /opt/ros/humble/setup.bash
    colcon build --packages-up-to stretch_simulation stack_cups
@@ -76,14 +81,18 @@ team's ROS2 setup guide (PDF), steps 8-10. The parts that are easy to get wrong:
 
 ```bash
 cd ~/ws && source /opt/ros/humble/setup.bash && source install/setup.bash
-export MUJOCO_GL=osmesa      # see "Depth" below; egl is faster if your GPU gives real depth
 ros2 launch stretch_simulation stretch_mujoco_driver.launch.py \
-    mode:=navigation use_rviz:=false use_robocasa:=false use_cameras:=true
+    mode:=navigation use_rviz:=false use_robocasa:=false use_cameras:=true \
+    cameras:=cam_d435i_rgb,cam_d435i_depth use_mujoco_viewer:=false
 ```
 
-`use_cameras:=true` is required; cameras are off by default. Add
-`use_mujoco_viewer:=false` to save a lot of CPU. The default scene (with
-`use_robocasa:=false`) has a red cylinder on a table to the robot's right.
+`use_cameras:=true` is required; cameras are off by default. `cameras:=` (added by the
+patches) renders only the head camera's color and depth, which is all `find_cup` uses. Each
+extra camera costs render time, and all five together are nowhere near real time. Leave out
+`use_mujoco_viewer:=false` to watch the robot in the MuJoCo window, at some cost in speed.
+In a VM where depth comes out broken, `export MUJOCO_GL=osmesa` before launching (see
+Troubleshooting). The default scene (with `use_robocasa:=false`) has a red cylinder on a
+table to the robot's right.
 
 **Terminal 2: the node**
 
@@ -120,17 +129,57 @@ The node logs each phase: `[START]` → `[AIM_HEAD]` → `[CENTER]` → `[READY]
    when the sim is slow.
 4. **REACH:** from depth, measure the table top and the table edge. Refuse to move if the
    gripper would be lowered into the table, onto it while retracted, or the cup is out of
-   reach. Otherwise lower to cup height and extend, correcting until each joint is within
-   1 cm (the sim's trajectory server accepts anything within 5 cm).
+   reach. Otherwise lower to cup height and extend. With the patched sim, each move lands
+   within 5 mm; if the server reports a joint as blocked (the gripper against the cup), the
+   node does not push past the target. Without the patches the server accepts anything
+   within 5 cm, so the node re-commands until each joint is within 1 cm.
 
 In MuJoCo tests the cup is located within about 1 cm and the table within about 1 cm.
 A grasp works when the cup is within about ±1 cm of the arm line, which is what ALIGN
 aims for.
 
+## Simulator patches
+
+`sim/patches/` holds fixes to Hello Robot's simulator packages. `apply_patches.sh` applies
+them (setup step 5); `apply_patches.sh --revert` undoes them. Rebuild `stretch_simulation`
+after either. They were made against `stretch_mujoco` commit `d107e09` (main) and
+`stretch_ros2` commit `73decc6` (humble).
+
+**`stretch_mujoco.patch`** (the simulator):
+
+| Problem | Fix | Measured |
+|---|---|---|
+| Every camera frame drew the lidar's 361 site spheres | Don't draw sites in camera images or the viewer (turn them back on in the viewer under Rendering) | head camera frame: 192 ms → 8 ms |
+| The 360-ray lidar was recomputed on every 2 ms physics step, but is only read at 15 Hz | Compute sensors at 30 Hz of sim time | physics step ~17× cheaper |
+| Physics pacing lost every sleep overshoot, and state was exchanged with the ROS side on every step | Pace against a running schedule; exchange state at 100 Hz | with the rows above: 0.003× → 1.0× real time (headless, head camera) |
+| The ROS side and the sim process both edit the shared command record, without a common lock | Share one lock | lost commands: 1 in 60 → 0 in 100 |
+| "Move the base 0 m" (sent for 1 s after `cmd_vel` stops) drove the base backward | Treat it as a stop | no more backward creep |
+
+**`stretch_ros2.patch`** (the ROS driver):
+
+- **Trajectory goals** (`/stretch_controller/follow_joint_trajectory`): every goal used to end
+  `ABORTED` (a crash after the move), and the server counted a joint as arrived within 5 cm.
+  Now a goal succeeds only once every joint has stopped within 5 mm (or the goal's
+  `goal_tolerance`). Joints that sag under gravity (lift ~1 cm, wrist pitch ~5 mrad) are
+  re-commanded until they get there.
+- **Honest failures:** a joint that something stops (the gripper against a cup, the gripper on
+  the table) fails with `<joint> blocked at ...` and keeps pushing only as hard as it did
+  before the patch; the arm is never commanded past its target, so it can't shove a cup. A
+  target past a joint limit fails too. The gripper succeeds when it stops, since stopping
+  short means it is holding something.
+- **Base joints:** `translate_mobile_base` / `rotate_mobile_base` in a trajectory now move the
+  base by that distance/angle in position mode (they always failed before), and are refused
+  with a message in navigation mode.
+- **`cameras:=` launch option:** render only the listed cameras (default `all`).
+
+Unchanged upstream behavior to know about: the driver runs trajectory goals on its only
+thread, so `/stretch/joint_states`, TF and `cmd_vel` handling pause while a goal runs.
+
 ## Helper scripts (`sim/`)
 
 | Script | What it does |
 |---|---|
+| `patches/apply_patches.sh` | Apply (or `--revert`) the simulator patches |
 | `check_camera.py` | Grab one camera frame, print brightness and red-pixel count, save it to `/tmp` |
 | `debug_cup_depth.py` | Run the node's depth pipeline on one frame and print every step |
 | `stretch_table_scene.py` | Standalone MuJoCo scene (no ROS): Stretch + square table |
@@ -148,7 +197,9 @@ ones from the `sim/` folder with `python3 <script>`.
 | Node gets no images at all | The sim was launched without `use_cameras:=true`. |
 | `package 'joint_state_publisher' not found` / `No module named 'control_msgs'` | Setup step 4. |
 | `Permission denied` reading files during `colcon build` from a VM shared folder | Files are readable only by their owner on the host. On the Mac: `chmod -R go+rX <workspace>/src`. If the build fails, `ros2 run` silently runs the old installed version. |
-| Viewer black/glitchy or very slow | Log in to Ubuntu on Xorg (not Wayland), enable GPU acceleration in the VM, give the VM more CPU cores, and use `use_mujoco_viewer:=false`. |
+| Sim far slower than real time (ALIGN needs many nudges, camera FPS low) | Apply the simulator patches (setup step 5), rebuild, and launch with `cameras:=cam_d435i_rgb,cam_d435i_depth use_mujoco_viewer:=false`. |
+| Every trajectory goal ends `ABORTED` with an empty error message | The simulator patches are not applied, or `stretch_simulation` was not rebuilt after applying them. |
+| Viewer black/glitchy | Log in to Ubuntu on Xorg (not Wayland), enable GPU acceleration in the VM, give the VM more CPU cores, and use `use_mujoco_viewer:=false`. |
 | `colcon test` lint failures | The ROS lint config wants single quotes and Google import order; the code currently uses double quotes (black style). Either reformat or relax the lint tests. |
 
 ## Roadmap

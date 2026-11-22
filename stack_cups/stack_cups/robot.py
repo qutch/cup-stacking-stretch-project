@@ -4,11 +4,15 @@ HelloNode (hello_helpers, used by the course starter's move_robot.py) gives us
 move_to_pose, mode switching, stop/stow, tf2_buffer and joint_state. This layer adds:
   - move(): move_to_pose with a timeout that raises if the move is invalid, rejected
     or does not reach its target (move_to_pose itself only logs, and a blocking call
-    can wait forever)
-  - move_joint_precise(): the sim reports a joint move done once it is within 5 cm,
-    so re-command until the joint is within `tol`
-  - drive_by(): move the base an exact distance in navigation mode, steered by /odom
-    (the sim's driver cannot do base position moves with translate_mobile_base)
+    can wait forever). If something stops a joint (the gripper against a cup), it
+    raises JointBlocked.
+  - move_joint_precise(): the unpatched sim reports a joint move done once it is within
+    5 cm, so re-command until the joint is within `tol`. With the sim patches
+    (sim/patches) and on the real robot one move is enough. A blocked joint is never
+    re-commanded past its target: that shoves whatever blocks it.
+  - drive_by(): move the base an exact distance in navigation mode, steered by /odom.
+    The same code works on the sim and the robot (the unpatched sim's driver cannot do
+    base position moves with translate_mobile_base).
 
 Time: every timeout, stall check and timing uses the node's ROS clock (now()). If the
 sim publishes /clock, start() switches the node to sim time, so a sim that runs far
@@ -54,12 +58,18 @@ DRIVE_HZ = 20.0
 # has not moved for this much wall time. (Not a cap on total wall time: the sim can run
 # at under 1% of real time, so a long move legitimately takes many wall minutes.)
 CLOCK_STALL_S = 60.0
-# The sim's trajectory server accepts a joint within 5 cm (or 0.05 rad) of its target
+# The unpatched sim's trajectory server accepts a joint within 5 cm (or 0.05 rad) of its
+# target, and reports ABORTED, with no error message, after every move
 REACHED_TOL = 0.05
 # Joints whose reported position cannot be compared with the command (gripper units
 # differ, and a gripper closing on a cup stops short of its target on purpose)
 UNVERIFIED_JOINTS = ("joint_gripper_finger_left", "joint_gripper_finger_right",
                      "gripper_aperture")
+
+
+class JointBlocked(RuntimeError):
+    """A joint stopped short because something is in its way (e.g. the gripper against a
+    cup). Reported by the patched sim server (sim/patches) as "<joint> blocked at ..."."""
 
 
 class CupRobot(hm.HelloNode):
@@ -154,11 +164,14 @@ class CupRobot(hm.HelloNode):
     def move(self, pose, timeout=30.0):
         """move_to_pose that raises RuntimeError unless every joint reaches its target.
 
-        A move counts as done if the server reports success, or if it reports another
-        status but joint_states shows every joint within REACHED_TOL of its target: the
-        MuJoCo sim's trajectory server raises after every move (it checks the wheels
-        with a call its stretch_mujoco version does not support) and so reports
-        ABORTED for moves that did finish."""
+        - Success: the server reports SUCCEEDED (the real driver, and the patched sim
+          server, which only does so once every joint is within 5 mm).
+        - A failure the server explains (an error message) raises; "<joint> blocked at"
+          raises JointBlocked.
+        - The unpatched MuJoCo sim server reports ABORTED with no message after every
+          move (it checks the wheels with a call its stretch_mujoco version does not
+          support). Then the move counts as done if joint_states shows every joint within
+          REACHED_TOL of its target."""
         future = self.move_to_pose(pose, blocking=False)
         if future is None:
             raise RuntimeError(f"invalid move (see the move_to_pose error above): {pose}")
@@ -170,6 +183,10 @@ class CupRobot(hm.HelloNode):
             raise RuntimeError(f"move did not finish in {timeout:.0f} s: {pose}")
         if result.status == GoalStatus.STATUS_SUCCEEDED:
             return
+        why = result.result.error_string if result.result is not None else ""
+        if why:
+            error = JointBlocked if "blocked" in why else RuntimeError
+            raise error(f"move failed (status {result.status}): {why}; pose {pose}")
         missed = self._wait_joints_reach(pose, timeout)
         if missed:
             raise RuntimeError(f"move failed (status {result.status}); "
@@ -237,12 +254,19 @@ class CupRobot(hm.HelloNode):
         return self.joint_pos(name)
 
     def move_joint_precise(self, joint, target, limits, tol=0.01, tries=5):
-        """The sim's trajectory server reports success once a joint is within 5 cm.
-        Re-command with the remaining error added until the joint is within `tol`,
-        then send the true target so it does not creep past."""
+        """Move one joint to within `tol` of `target`.
+
+        The unpatched sim reports success once a joint is within 5 cm, so re-command with
+        the remaining error added until it is within `tol`, then send the true target so
+        it does not creep past. If something blocks the joint (JointBlocked), stop
+        correcting: commanding past the target would only shove what is in the way."""
         cmd = target
         for _ in range(tries):
-            self.move({joint: float(np.clip(cmd, *limits))})
+            blocked = None
+            try:
+                self.move({joint: float(np.clip(cmd, *limits))})
+            except JointBlocked as e:
+                blocked = e
             actual = self.wait_joint_still(joint)
             if actual is None:
                 self.get_logger().warn(f"no joint state for {joint}; skipping correction")
@@ -253,6 +277,15 @@ class CupRobot(hm.HelloNode):
             if abs(err) < tol:
                 if cmd != target:
                     self.move({joint: target})
+                return
+            if blocked is not None:
+                self.get_logger().warn(f"{joint} is blocked {err * 100:+.1f} cm short of "
+                                       f"{target:.3f}; not pushing harder ({blocked})")
+                if cmd != target:
+                    try:
+                        self.move({joint: target})
+                    except JointBlocked:
+                        pass  # still blocked; it now pushes only toward the true target
                 return
             cmd += err
         self.get_logger().warn(f"{joint} did not get within {tol * 100:.0f} cm of {target:.3f}")
