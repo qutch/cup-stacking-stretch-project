@@ -114,8 +114,8 @@ grep -vE "move_to_pose" ~/runB.log | grep -E "\[|Error|Traceback|WARN"     # sum
    → x went -0.19 → -0.91 in 15 s; zero twists at 10 Hz → steady (0.2 mm in 15 s). Our
    stream was a sim-time timer (one message per ~10 wall s at 1% speed), so the base crept
    back 3-4 cm/s while "stopped". **Fixed** in `6e10cac`: a 10 Hz wall-time thread
-   (`_stream_loop`). **Not yet verified in a full find_cup run** (one was running in the
-   VM when this was written).
+   (`_stream_loop`). **Verified in run B3** (no drift warnings; odom x identical from
+   READY to ALIGN).
 5. `/odom` is MuJoCo ground truth; `/clock` is sim time; cmd_vel topic is
    `/stretch/cmd_vel`.
 6. Cameras render at 10 Hz sim time; between renders the last frame is **re-sent**, so
@@ -151,15 +151,22 @@ grep -vE "move_to_pose" ~/runB.log | grep -E "\[|Error|Traceback|WARN"     # sum
   spread ~1 mm); drive accurate; wrist turned to +0.141 rad as asked; **FAILED**
   "wrist yaw left +0.174 m" because the base drifted back ~17 cm during the wrist turn and
   re-measure (fact 4, now fixed).
-- **Next expected:** no "base moved ... mm while measuring" warnings, the same
-  `base at odom x=` from READY to ALIGN, the wrist check within 1 cm, REACH runs and the
-  gripper closes.
+- **Run B3 (`-p grasp:=true`, after the drift fix): DONE.** No drift warnings; odom x
+  -0.013 in both READY and ALIGN. Cup +12.2 cm → one drive (asked +12.2, got +11.9) → cup
+  -0.9 cm → wrist yaw -0.033 rad (reached -0.026) → grasp point **-0.1 cm** from the cup.
+  REACH: lift 0.418 (target 0.420), extension 0.137 (target 0.141; first try stopped 3.5 cm
+  short and `move_joint_precise` corrected it), gripper closed. Sim time: AIM_HEAD 0.4 s,
+  READY 2.4 s, ALIGN 8.5 s, REACH 4.4 s, **total 15.7 s** (wall 1875 s at 1% speed).
+  Not checked: whether the cup is actually held (grasp check is roadmap 1.8).
+- **Possible speed-up seen in B3:** the 12 cm drive took about 6 s of sim time (~2 cm/s
+  average) although `v_max` is 0.15 m/s; worth checking `drive_by`'s speed profile and
+  the sim base's acceleration on the desktop.
 
 ## 9. What is left (plan tasks)
 
 - Tasks 1-4: complete. Tasks 5-6: code done; **sim verification pending**:
   - run A: `-p grasp:=true -p use_wrist_yaw:=false`
-  - run B: `-p grasp:=true`
+  - run B: `-p grasp:=true` — **done (B3), passed**
   - D1: `-p odom_topic:=/nope` must fail fast naming the topic (the subscription ignored
     this parameter until `6e10cac`)
   - D2: `-p head_pan:=0.0` must fail cleanly; then `ros2 topic echo --once /stretch/cmd_vel`
