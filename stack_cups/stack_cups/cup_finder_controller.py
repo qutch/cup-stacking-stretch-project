@@ -1,18 +1,24 @@
 """Find the red cup, line the robot up with it, and reach the arm out to it.
 
-Phases (each logged as it starts):
-  1. AIM_HEAD  - point the head camera at the table on the robot's arm side
-  2. CENTER    - (original find_cup logic) drive forward/back until the cup is
-                 centered in the head camera image
-  3. READY     - raise the lift well above the cup, straighten the wrist, open the gripper
-  4. ALIGN     - using depth, drive until the cup lines up with the arm's reach line
-  5. REACH     - using depth, measure the cup and the table, check the move is safe,
+Built on CupRobot (stack_cups/robot.py), which is the course starter's HelloNode plus
+checked moves and odometry-steered base moves. The whole run stays in navigation mode:
+the base takes cmd_vel and every other joint still takes move_to_pose goals.
+
+Phases (each logged as it starts, with its duration when it ends):
+  1. START     - wait for camera images, depth, camera info, TF and /odom
+  2. AIM_HEAD  - point the head camera at the table on the robot's arm side
+  3. READY     - measure the cup, raise the lift above it, straighten the wrist,
+                 open the gripper, read the grasp point's offsets from TF
+  4. ALIGN     - measure (stopped, fresh frames), drive exactly the measured offset by
+                 odometry, repeat at most `max_drives` times; with use_wrist_yaw, drive
+                 only until the wrist yaw can cover the rest, then turn the wrist and
+                 check the grasp point (from TF) is within yaw_check_tol of the cup
+  5. REACH     - measure the cup, table top and table edge, check the move is safe,
                  lower to cup height, then extend the arm to the cup
   6. DONE / FAILED
 
-Depth is used to (a) find the cup's 3D position, (b) measure the table top so the
-gripper is never lowered into it, and (c) measure the table edge so the gripper is
-not lowered on top of the table while retracted.
+Times are on the node's clock: sim time in the MuJoCo sim (which can run much slower
+than real time), wall time on the robot. The wall time is logged alongside.
 
 Run with the sim launched with use_cameras:=true:
     ros2 run stack_cups find_cup
@@ -26,111 +32,94 @@ import time
 import cv2
 import numpy as np
 import rclpy
-from control_msgs.action import FollowJointTrajectory
 from cv_bridge import CvBridge
-from geometry_msgs.msg import Twist
-from rclpy.action import ActionClient
-from rclpy.duration import Duration
-from rclpy.executors import MultiThreadedExecutor
-from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
-from rclpy.time import Time
-from sensor_msgs.msg import CameraInfo, Image, JointState
-from std_srvs.srv import Trigger
-from tf2_ros import Buffer, TransformListener
-from trajectory_msgs.msg import JointTrajectoryPoint
+from sensor_msgs.msg import CameraInfo, Image
 
+from stack_cups import motion as M
 from stack_cups import perception as P
+from stack_cups.robot import CupRobot
 
 IMAGE_TOPIC = "/camera/color/image_raw"
 COLOR_INFO_TOPIC = "/camera/color/camera_info"
 DEPTH_TOPIC = "/camera/depth/image_rect_raw"
 DEPTH_INFO_TOPIC = "/camera/depth/camera_info"
-JOINT_STATES_TOPIC = "/stretch/joint_states"
-CMD_VEL_TOPIC = "/stretch/cmd_vel"
-TRAJ_ACTION = "/stretch_controller/follow_joint_trajectory"
 BASE_FRAME = "base_link"
 GRASP_FRAME = "link_grasp_center"
 
-# Phase 2 (original find_cup tuning)
-CENTER_THRESH = 2  # pixels of dead zone
-KP = 0.009  # m/s per pixel of error
-MAX_SPEED = 0.22
-CENTER_FRAMES = 5  # consecutive centered frames before moving on
-# 120 is half the height of the camera image; the D435i is mounted rotated, so the
-# image's vertical axis runs along the robot's driving direction
-IMAGE_CENTER_ROW = 120
-
-# Phase 4
-ALIGN_TOL = 0.008  # m; grasps tested reliable within +/-1 cm of the arm line
-ALIGN_ACCEPT = 0.012  # if fine alignment stalls, still accept this much error
-FINE_ZONE = 0.04  # below this error, switch to stop-and-measure nudges
-FINE_MAX_NUDGES = 25
-PULSE_MAX_S = 6.0
-SETTLE_S = 1.0  # wait after stopping so the next camera frames are fresh
-# The sim's base only reaches ~20-25% of small commanded speeds (wheel friction),
-# so these commands are larger than the motion they actually produce.
-ALIGN_KP = 3.0  # (m/s commanded) per m of error
-ALIGN_MAX = 0.12
-ALIGN_MIN = 0.04
-ALIGN_STALL_S = 30.0  # fail if the error has not improved by 5 mm in this long
-ALIGN_MAX_S = 240.0
-# The driver brakes if cmd_vel stops arriving for 0.5 s, so the current command
-# is re-published at this rate while in navigation mode.
-CMD_VEL_HZ = 10.0
-
-# Arm
 READY_ABOVE_CUP = 0.25  # how far above the cup the grasp point sits while driving
 GRIPPER_OPEN = 0.5
 GRIPPER_CLOSED = -0.1
 
+# name: default. Override with --ros-args -p name:=value
+PARAMS = {
+    "aim_head": True,
+    "head_pan": -1.57,
+    "head_tilt": -0.6,
+    "grasp": False,
+    "show_windows": True,
+    "v_max": 0.15,  # m/s, base speed far from the target
+    "v_min": 0.06,  # m/s, slowest command that still moves the base (checked in the sim)
+    "decel": 0.1,  # m/s^2, how hard the base slows down near the target
+    "drive_tol": 0.003,  # m, a drive stops this close to its target
+    "align_tol": 0.008,  # m, grasps tested reliable within +/-1 cm of the arm line
+    "max_drives": 3,
+    # The sim renders a new camera image only every 0.1 s of *sim* time and re-sends the
+    # last one in between, so "fresh" is decided on the ROS clock, not by counting messages
+    "settle_s": 0.3,  # s to wait after stopping before measuring (~3 sim renders)
+    "sample_dt": 0.1,  # s between samples (one sim render)
+    "samples": 5,  # measurements per position (median)
+    "max_spread": 0.01,  # m, if samples spread more, take more
+    "grasp_height": -1.0,  # m above the table top to grasp at; < 0 = cup center
+    # Wrist yaw covers the last few cm, so the base rarely needs a second drive.
+    # arm_len and yaw_sign were measured in the sim with sim/check_robot_layer.py.
+    "use_wrist_yaw": True,
+    "max_yaw": 0.25,  # rad (~14 deg): about +/-6.7 cm of sideways reach
+    "arm_len": 0.270,  # m, wrist yaw axis to grasp center
+    "yaw_sign": 1.0,  # +yaw moves the grasp point toward +x of base_link
+    "yaw_check_tol": 0.010,  # m, grasp point must end this close to the cup's x
+}
 
-class FindCup(Node):
+
+class FindCup(CupRobot):
     def __init__(self):
-        super().__init__("FindCup")
-        self.declare_parameter("aim_head", True)
-        self.declare_parameter("head_pan", -1.57)
-        self.declare_parameter("head_tilt", -0.6)
-        self.declare_parameter("grasp", False)
-        self.declare_parameter("show_windows", True)
-
+        super().__init__()
         self.bridge = CvBridge()
         self.lock = threading.Lock()
         self.color = self.depth = None
         self.color_info = self.depth_info = None
-        self.joints = {}
-
-        self.create_subscription(Image, IMAGE_TOPIC, self._on_color, qos_profile_sensor_data)
-        self.create_subscription(Image, DEPTH_TOPIC, self._on_depth, qos_profile_sensor_data)
-        self.create_subscription(CameraInfo, COLOR_INFO_TOPIC, self._on_color_info,
-                                 qos_profile_sensor_data)
-        self.create_subscription(CameraInfo, DEPTH_INFO_TOPIC, self._on_depth_info,
-                                 qos_profile_sensor_data)
-        self.create_subscription(JointState, JOINT_STATES_TOPIC, self._on_joints, 10)
-        self.pub = self.create_publisher(Twist, CMD_VEL_TOPIC, 10)
-        self.cmd_v = 0.0
-        self.nav_active = False
-        self.create_timer(1.0 / CMD_VEL_HZ, self._stream_cmd_vel)
-
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
-        self.traj = ActionClient(self, FollowJointTrajectory, TRAJ_ACTION)
-        self.to_position = self.create_client(Trigger, "/switch_to_position_mode")
-        self.to_navigation = self.create_client(Trigger, "/switch_to_navigation_mode")
-
+        self.depth_count = 0
+        self.last_miss = ""
         self.phase = "START"
-        self.status = ""
+        self.t_start = self.t_phase = None  # (ros time, wall time)
+
+    def start(self, name="find_cup"):
+        super().start(name)
+        self.cfg = {k: self.param(k, v) for k, v in PARAMS.items()}
+        if self.cfg["show_windows"]:
+            self.on_idle = lambda: cv2.waitKey(1)
+        cb = self.cb_group
+        self.create_subscription(Image, IMAGE_TOPIC, self._on_color, qos_profile_sensor_data,
+                                 callback_group=cb)
+        self.create_subscription(Image, DEPTH_TOPIC, self._on_depth, qos_profile_sensor_data,
+                                 callback_group=cb)
+        self.create_subscription(CameraInfo, COLOR_INFO_TOPIC, self._on_color_info,
+                                 qos_profile_sensor_data, callback_group=cb)
+        self.create_subscription(CameraInfo, DEPTH_INFO_TOPIC, self._on_depth_info,
+                                 qos_profile_sensor_data, callback_group=cb)
 
     # ---------------------------------------------------------------- callbacks
+    # Images are stored as messages and only converted when measuring: the sim re-sends
+    # frames far more often than it renders them, and converting each one takes CPU
+    # the sim needs.
     def _on_color(self, msg):
-        img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         with self.lock:
-            self.color = (img, msg.header.frame_id)
+            self.color = msg
 
     def _on_depth(self, msg):
-        img = self.bridge.imgmsg_to_cv2(msg, "32FC1")
         with self.lock:
-            self.depth = (np.array(img, dtype=np.float32), msg.header.frame_id)
+            self.depth = msg
+            self.depth_count += 1
 
     def _on_color_info(self, msg):
         self.color_info = msg
@@ -138,117 +127,44 @@ class FindCup(Node):
     def _on_depth_info(self, msg):
         self.depth_info = msg
 
-    def _stream_cmd_vel(self):
-        if self.nav_active:
-            msg = Twist()
-            msg.linear.x = float(self.cmd_v)
-            self.pub.publish(msg)
-
-    def _on_joints(self, msg):
-        with self.lock:
-            self.joints.update(dict(zip(msg.name, msg.position)))
-
     # ------------------------------------------------------------------ helpers
     def log(self, text):
-        self.status = text
         self.get_logger().info(text)
 
     def set_phase(self, phase, text=""):
+        now = (self.now(), time.time())
+        if self.t_start is None:
+            self.t_start = now
+        if self.t_phase is not None and self.phase != "START" and phase != self.phase:
+            self.log(f"[timing] {self.phase} took {now[0] - self.t_phase[0]:.1f} s "
+                     f"(wall {now[1] - self.t_phase[1]:.1f} s)")
+        self.t_phase = now
         self.phase = phase
         self.log(f"[{phase}] {text}" if text else f"[{phase}]")
 
-    def drive(self, v):
-        """Set the base speed; the timer keeps re-sending it to the driver."""
-        self.cmd_v = float(v)
-        msg = Twist()
-        msg.linear.x = self.cmd_v
-        self.pub.publish(msg)
-
-    def stop(self):
-        for _ in range(3):
-            self.drive(0.0)
-            time.sleep(0.05)
-
-    @staticmethod
-    def wait_future(future, timeout):
-        t0 = time.time()
-        while not future.done():
-            if time.time() - t0 > timeout:
-                return None
-            time.sleep(0.02)
-        return future.result()
-
-    def switch_mode(self, client, name):
-        if name != "navigation":
-            self.stop()
-            self.nav_active = False
-        if not client.wait_for_service(timeout_sec=5.0):
-            raise RuntimeError(f"service for {name} mode not available")
-        res = self.wait_future(client.call_async(Trigger.Request()), 10.0)
-        if res is None or not res.success:
-            raise RuntimeError(f"could not switch to {name} mode")
-        time.sleep(0.3)
-        if name == "navigation":
-            self.cmd_v = 0.0
-            self.nav_active = True
-
-    def move_joints(self, positions, seconds=3.0):
-        """positions: {joint_name: target}. Blocks until the trajectory finishes."""
-        if not self.traj.wait_for_server(timeout_sec=5.0):
-            raise RuntimeError("trajectory action server not available")
-        goal = FollowJointTrajectory.Goal()
-        goal.trajectory.joint_names = list(positions)
-        point = JointTrajectoryPoint()
-        point.positions = [float(v) for v in positions.values()]
-        point.time_from_start = Duration(seconds=seconds).to_msg()
-        goal.trajectory.points = [point]
-        handle = self.wait_future(self.traj.send_goal_async(goal), 10.0)
-        if handle is None or not handle.accepted:
-            raise RuntimeError(f"trajectory goal rejected: {positions}")
-        result = self.wait_future(handle.get_result_async(), 60.0)
-        if result is None:
-            raise RuntimeError(f"trajectory timed out: {positions}")
-        time.sleep(0.3)
-
-    def move_joint_precise(self, joint, target, limits, tol=0.01, tries=5):
-        """The sim's trajectory server reports success once a joint is within 5 cm,
-        and the arm/lift settle slowly. Re-command with the remaining error added
-        until the joint (per /stretch/joint_states) is within `tol`, then send the
-        true target so it does not creep past."""
-        cmd = target
-        for i in range(tries):
-            self.move_joints({joint: float(np.clip(cmd, *limits))}, 3.0)
-            time.sleep(1.5)
-            with self.lock:
-                actual = self.joints.get(joint)
-            if actual is None:
-                self.get_logger().warn(f"no joint state for {joint}; skipping correction")
-                return
-            err = target - actual
-            self.get_logger().info(f"{joint}: target {target:.3f}, actual {actual:.3f} "
-                                   f"({err * 100:+.1f} cm)")
-            if abs(err) < tol:
-                if cmd != target:
-                    self.move_joints({joint: target}, 1.0)
-                return
-            cmd += err
-        self.get_logger().warn(f"{joint} did not get within {tol * 100:.0f} cm of {target:.3f}")
-
-    def lookup(self, target, source):
-        """(R, t) mapping points in `source` into `target`, or None."""
-        try:
-            tf = self.tf_buffer.lookup_transform(target, source, Time(),
-                                                 timeout=Duration(seconds=0.5))
-        except Exception as e:  # noqa: BLE001 - tf2 raises several exception types
-            self.get_logger().warn(f"TF {source} -> {target} unavailable: {e}",
-                                   throttle_duration_sec=2.0)
-            return None
-        q, p = tf.transform.rotation, tf.transform.translation
-        return P.quat_to_mat(q.x, q.y, q.z, q.w), np.array([p.x, p.y, p.z])
-
     def latest(self):
+        """(color image, frame id), (depth image, frame id); each None if not received."""
         with self.lock:
-            return self.color, self.depth
+            cmsg, dmsg = self.color, self.depth
+        color = depth = None
+        if cmsg is not None:
+            color = (self.bridge.imgmsg_to_cv2(cmsg, "bgr8"), cmsg.header.frame_id)
+        if dmsg is not None:
+            depth = (np.array(self.bridge.imgmsg_to_cv2(dmsg, "32FC1"), dtype=np.float32),
+                     dmsg.header.frame_id)
+        return color, depth
+
+    def wait_new_depth(self, n, timeout=3.0):
+        """Wait until `n` more depth frames have arrived (ROS time). False on timeout."""
+        with self.lock:
+            target = self.depth_count + n
+        t0 = self.now()
+        while self.now() - t0 < timeout:
+            with self.lock:
+                if self.depth_count >= target:
+                    return True
+            time.sleep(0.02)
+        return False
 
     def measure(self, full=True):
         """One depth measurement: dict with cup center/radius, and (if full) table top
@@ -260,58 +176,113 @@ class FindCup(Node):
         bbox, mask = P.find_red_blob(img)
         out = {"img": img, "mask": mask, "bbox": bbox}
         if bbox is None:
+            out["why"] = f"no red blob in the image ({int(np.count_nonzero(mask))} red pixels)"
             return out
         T_base = self.lookup(BASE_FRAME, depth_frame)
         T_cd = self.lookup(color_frame, depth_frame)
         if T_base is None or T_cd is None:
+            out["why"] = f"TF {depth_frame} -> {BASE_FRAME} or {color_frame} unavailable"
             return out
         R, t = T_base
         cup, radius = P.locate_cup(dimg, self.depth_info.k, R, t, mask,
                                    self.color_info.k, T_cd[0], T_cd[1], bbox)
         if cup is None:
+            out["why"] = f"red blob at {bbox} but too few depth points on it"
             return out
         out.update(cup=cup, radius=radius)
+        pose = self.odom_pose()
+        if pose is not None:
+            # The cup in the fixed odom frame, so samples taken while the base drifts
+            # still agree (the base was seen creeping while "stopped" in the sim)
+            out.update(pose=pose, cup_odom=np.array([*M.base_to_odom(cup[:2], pose), cup[2]]))
         if not full:
             return out
         pts = P.to_base(P.backproject(dimg, self.depth_info.k, step=2), R, t)
         top = P.estimate_table_top(pts, cup, radius)
         edge = P.table_edge_distance(pts, cup[0], 0.3, (top if top is not None else cup[2]) + 0.02)
-        out.update(cup=cup, radius=radius, table_top=top, edge=edge)
+        out.update(table_top=top, edge=edge)
         return out
 
-    def measure_avg(self, n=5, full=True):
-        """Average several measurements while standing still."""
-        samples = []
-        t0 = time.time()
-        while len(samples) < n and time.time() - t0 < 10.0:
-            m = self.measure(full)
-            if m and "cup" in m:
-                samples.append(m)
-            time.sleep(0.15)
-        if not samples:
+    def measure_fresh(self, samples=None, full=False):
+        """Measure while stopped: wait `settle_s` (ROS time) so no image used was
+        rendered while moving, take `samples` measurements `sample_dt` apart, and use
+        their median. If they spread more than `max_spread`, take `samples` more once.
+        None if the cup was not found in any of them."""
+        n = int(samples or self.cfg["samples"])
+        if not self.wait_new_depth(1):
+            raise RuntimeError("no depth images arriving")
+        self.sleep(self.cfg["settle_s"])
+        found = []
+
+        def collect(k):
+            tries = 0
+            while len(found) < k and tries < 3 * k:
+                tries += 1
+                if tries > 1:
+                    self.sleep(self.cfg["sample_dt"])
+                m = self.measure(full)
+                if m:
+                    self.show(m)
+                if m and "cup" in m:
+                    found.append(m)
+                else:
+                    why = (m or {}).get("why", "no camera data")
+                    misses[why] = misses.get(why, 0) + 1
+
+        misses = {}
+        collect(n)
+        if not found:
+            self.last_miss = "; ".join(f"{k} (x{v})" for k, v in misses.items())
+            self.get_logger().warn(f"cup not found: {self.last_miss}")
             return None
-        out = dict(samples[-1])
-        out["cup"] = np.mean([s["cup"] for s in samples], axis=0)
-        out["radius"] = float(np.mean([s["radius"] for s in samples]))
-        tops = [s["table_top"] for s in samples if s.get("table_top") is not None]
-        edges = [s["edge"] for s in samples if s.get("edge") is not None]
-        out["table_top"] = float(np.median(tops)) if tops else None
-        out["edge"] = float(np.min(edges)) if edges else None
+        key = "cup_odom" if all("cup_odom" in s for s in found) else "cup"
+        center, spread, ok = M.robust_center([s[key] for s in found], self.cfg["max_spread"])
+        if not ok:
+            collect(2 * n)
+            key = "cup_odom" if all("cup_odom" in s for s in found) else "cup"
+            center, spread, ok = M.robust_center([s[key] for s in found],
+                                                 self.cfg["max_spread"])
+        out = dict(found[-1])
+        if key == "cup_odom":
+            # back into base_link with the base's pose now, i.e. where the cup is
+            # relative to the robot right before the next move
+            pose = self.odom_pose()
+            base_xy = M.odom_to_base(center[:2], pose)
+            out.update(cup_odom=center, pose=pose,
+                       cup=np.array([base_xy[0], base_xy[1], center[2]]))
+            drift = abs(found[-1]["pose"][0] - found[0]["pose"][0])
+            if drift > 0.002:
+                self.get_logger().warn(f"the base moved {drift * 1000:.0f} mm while "
+                                       f"measuring (it should be still)")
+        else:
+            out["cup"] = center
+        out.update(spread=spread, radius=float(np.median([s["radius"] for s in found])))
+        if full:
+            tops = [s["table_top"] for s in found if s.get("table_top") is not None]
+            edges = [s["edge"] for s in found if s.get("edge") is not None]
+            out["table_top"] = float(np.median(tops)) if tops else None
+            out["edge"] = float(np.min(edges)) if edges else None
         return out
+
+    @staticmethod
+    def _odom_note(m):
+        """'; base at odom x=..., cup at odom x=...' for logs (empty if no odom)."""
+        if "pose" not in m or "cup_odom" not in m:
+            return ""
+        return (f"; base at odom x={m['pose'][0]:+.3f}, "
+                f"cup at odom ({m['cup_odom'][0]:+.3f}, {m['cup_odom'][1]:+.3f})")
 
     def arm_offsets(self):
         """Grasp point relative to lift/extension, measured from TF + joint states."""
         T = self.lookup(BASE_FRAME, GRASP_FRAME)
-        with self.lock:
-            lift = self.joints.get("joint_lift")
-            ext = self.joints.get("wrist_extension")
+        lift, ext = self.joint_pos("joint_lift"), self.joint_pos("wrist_extension")
         if T is None or lift is None or ext is None:
             return None
         g = T[1]
         return {"h": g[2] - lift, "c": -g[1] - ext, "x": g[0]}
 
     def show(self, m):
-        if not self.get_parameter("show_windows").value or m is None:
+        if not self.cfg["show_windows"] or m is None:
             return
         img = m["img"].copy()
         if m.get("bbox"):
@@ -325,14 +296,20 @@ class FindCup(Node):
 
     # ------------------------------------------------------------------- phases
     def wait_for_data(self):
-        self.set_phase("START", "waiting for camera images, depth, camera info and TF ...")
-        t0 = time.time()
+        self.set_phase("START", "waiting for camera images, depth, camera info, TF and odometry ...")
+        t0, w0 = self.now(), time.time()
         while rclpy.ok():
             color, depth = self.latest()
-            if color and depth and self.color_info and self.depth_info and \
-                    self.lookup(BASE_FRAME, depth[1]) is not None:
-                # Zeros are normal (nothing within range, e.g. sky). Negative values or
-                # NaNs mean the GPU renderer is not producing real depth.
+            have = {
+                "color image": color is not None,
+                "depth image": depth is not None,
+                "camera info": self.color_info is not None and self.depth_info is not None,
+                "TF": depth is not None and self.lookup(BASE_FRAME, depth[1]) is not None,
+                f"odometry on {self.odom_topic}": self.odom_pose() is not None,
+            }
+            if all(have.values()):
+                # Zeros are normal (nothing within range). Negative values or NaNs mean
+                # the GPU renderer is not producing real depth.
                 d = depth[0]
                 nan_frac = float(np.mean(~np.isfinite(d)))
                 if nan_frac > 0.05 or np.nanmin(d) < -0.01:
@@ -341,69 +318,35 @@ class FindCup(Node):
                         f"min {np.nanmin(d):.2f} m). The sim's GPU renderer is not producing "
                         "depth; restart the sim with: export MUJOCO_GL=osmesa")
                 return
-            if time.time() - t0 > 30:
-                raise RuntimeError(
-                    "no camera/depth data after 30 s - "
-                    "was the sim launched with use_cameras:=true?")
+            if self.now() - t0 > 30 or time.time() - w0 > 120:
+                missing = ", ".join(k for k, ok in have.items() if not ok)
+                raise RuntimeError(f"no {missing} after 30 s - was the sim launched with "
+                                   "use_cameras:=true?")
             time.sleep(0.2)
 
     def aim_head(self):
-        if not self.get_parameter("aim_head").value:
+        if not self.cfg["aim_head"]:
             return
-        pan = self.get_parameter("head_pan").value
-        tilt = self.get_parameter("head_tilt").value
+        pan, tilt = self.cfg["head_pan"], self.cfg["head_tilt"]
         self.set_phase("AIM_HEAD", f"pan={pan:.2f} tilt={tilt:.2f}")
-        self.switch_mode(self.to_position, "position")
-        self.move_joints({"joint_head_pan": pan, "joint_head_tilt": tilt}, 2.0)
-
-    def center(self):
-        """Original find_cup behavior: drive until the cup is centered in the image."""
-        self.set_phase("CENTER", "driving to center the cup in the head camera image")
-        self.switch_mode(self.to_navigation, "navigation")
-        centered = 0
-        while rclpy.ok():
-            color, _ = self.latest()
-            img = color[0]
-            bbox, mask = P.find_red_blob(img)
-            self.show({"img": img, "mask": mask, "bbox": bbox})
-            if bbox is None:
-                self.stop()
-                self.get_logger().info("no red cup in view", throttle_duration_sec=2.0)
-                centered = 0
-                time.sleep(0.05)
-                continue
-            x, y, w, h = bbox
-            cx, cy = x + w // 2, y + h // 2
-            error = cy - IMAGE_CENTER_ROW
-            self.get_logger().info(f"Cup at pixel ({cx}, {cy}), error {error}",
-                                   throttle_duration_sec=1.0)
-            if abs(error) > CENTER_THRESH:
-                centered = 0
-                self.drive(np.clip(KP * error, -MAX_SPEED, MAX_SPEED))
-            else:
-                self.drive(0.0)
-                centered += 1
-                if centered >= CENTER_FRAMES:
-                    self.stop()
-                    return
-            time.sleep(0.05)
+        self.move({"joint_head_pan": pan, "joint_head_tilt": tilt})
 
     def ready_arm(self):
-        self.set_phase("READY", "raising the lift above the cup and straightening the wrist")
-        time.sleep(0.5)
-        m = self.measure_avg()
+        self.set_phase("READY", "measuring the cup, raising the lift, straightening the wrist")
+        m = self.measure_fresh()
         if m is None:
-            raise RuntimeError("cup not found in depth after centering")
-        self.log(f"cup at base ({m['cup'][0]:.3f}, {m['cup'][1]:.3f}, {m['cup'][2]:.3f}) m")
-        self.switch_mode(self.to_position, "position")
+            raise RuntimeError(f"cup not found: {self.last_miss}")
+        self.log(f"cup at base ({m['cup'][0]:.3f}, {m['cup'][1]:.3f}, {m['cup'][2]:.3f}) m"
+                 f"{self._odom_note(m)}")
         offs = self.arm_offsets()
         h = offs["h"] if offs else 0.115
         lift = float(np.clip(m["cup"][2] + READY_ABOVE_CUP - h, 0.3, 1.05))
         # Lift first (arm stays retracted), then straighten the wrist up there
-        self.move_joints({"joint_lift": lift, "wrist_extension": 0.0}, 3.0)
-        self.move_joints({"joint_wrist_yaw": 0.0, "joint_wrist_pitch": 0.0,
-                          "joint_wrist_roll": 0.0, "joint_gripper_finger_left": GRIPPER_OPEN}, 3.0)
-        time.sleep(0.5)
+        self.move({"joint_lift": lift, "wrist_extension": 0.0})
+        self.move({"joint_wrist_yaw": 0.0, "joint_wrist_pitch": 0.0,
+                   "joint_wrist_roll": 0.0, "joint_gripper_finger_left": GRIPPER_OPEN})
+        for joint in ("joint_lift", "joint_wrist_yaw", "joint_wrist_pitch"):
+            self.wait_joint_still(joint)
         offs = self.arm_offsets()
         if offs is None:
             raise RuntimeError(f"could not read {GRASP_FRAME} from TF")
@@ -412,142 +355,114 @@ class FindCup(Node):
         return offs
 
     def align(self, offs):
-        self.set_phase("ALIGN", "driving until the cup lines up with the arm (depth)")
-        self.switch_mode(self.to_navigation, "navigation")
-        self._align_coarse(offs)
-        self._align_fine(offs)
-
-    def _align_coarse(self, offs):
-        """Drive continuously until the cup is within FINE_ZONE of the arm line."""
-        t0 = t_best = time.time()
-        best = None
-        while rclpy.ok():
-            now = time.time()
-            if now - t0 > ALIGN_MAX_S or now - t_best > ALIGN_STALL_S:
-                self.get_logger().warn("coarse alignment is not converging; "
-                                       "switching to stop-and-measure nudges")
+        """Returns the grasp offsets to reach with (changed if the wrist was turned)."""
+        self.set_phase("ALIGN", "measure, drive the measured offset by odometry, repeat")
+        c = self.cfg
+        use_yaw = bool(c["use_wrist_yaw"])
+        # with the wrist yaw, the base only has to get within (most of) its reach
+        good_enough = (0.8 * M.yaw_reach(c["arm_len"], c["max_yaw"]) if use_yaw
+                       else c["align_tol"])
+        max_drives = int(c["max_drives"])
+        for drives in range(max_drives + 1):
+            m = self.measure_fresh()
+            if m is None:
+                raise RuntimeError(f"lost the cup during alignment: {self.last_miss}")
+            dx = float(m["cup"][0] - offs["x"])
+            self.log(f"[ALIGN] cup is {dx * 100:+.1f} cm from the arm line "
+                     f"(spread {m['spread'] * 1000:.1f} mm, {drives} drives so far)"
+                     f"{self._odom_note(m)}")
+            if abs(dx) < c["align_tol"]:
+                self.log(f"[ALIGN] aligned after {drives} drives")
+                return offs
+            if use_yaw and abs(dx) < good_enough:
+                return self._align_wrist(dx)
+            if drives == max_drives:
                 break
-            m = self.measure(full=False)
-            self.show(m)
-            if not m or "cup" not in m:
-                self.drive(0.0)
-                time.sleep(0.1)
-                continue
-            dx = m["cup"][0] - offs["x"]
-            if best is None or abs(dx) < best - 0.005:
-                best, t_best = abs(dx), now
-            self.get_logger().info(f"cup is {dx * 100:+.1f} cm from the arm line",
-                                   throttle_duration_sec=1.0)
-            if abs(dx) < FINE_ZONE:
-                break
-            v = np.clip(ALIGN_KP * dx, -ALIGN_MAX, ALIGN_MAX)
-            self.drive(np.sign(v) * max(abs(v), ALIGN_MIN))
-            time.sleep(0.05)
-        self.stop()
-        time.sleep(SETTLE_S)
+            moved = self.drive_by(dx, v_max=c["v_max"], v_min=c["v_min"], decel=c["decel"],
+                                  tol=c["drive_tol"])
+            self.log(f"[ALIGN] drive {drives + 1}: asked {dx * 100:+.1f} cm, "
+                     f"odometry says {moved * 100:+.1f} cm")
+        raise RuntimeError(f"alignment: still {dx:+.3f} m off after {max_drives} drives")
 
-    def _dx_still(self, offs):
-        m = self.measure_avg(3, full=False)
-        if m is None:
-            raise RuntimeError("lost the cup in depth during alignment")
-        self.show(m)
-        return float(m["cup"][0] - offs["x"])
-
-    def _align_fine(self, offs):
-        """Nudge-and-look: short drive pulse, stop, wait for fresh frames, re-measure.
-        Camera latency cannot cause overshoot because we only measure when stopped.
-
-        How far a pulse moves the base depends on how fast the sim is running (it
-        can be far slower than real time with software rendering), so the achieved
-        speed is learned from each nudge. If a nudge falls short, the next pulse is
-        longer; once pulses are at their maximum length, the command is raised."""
-        cmd = ALIGN_MIN
-        speed = 0.008  # m/s actually achieved at `cmd`; learned from each nudge
-        dx = self._dx_still(offs)
-        best = abs(dx)
-        for i in range(FINE_MAX_NUDGES):
-            if abs(dx) < ALIGN_TOL:
-                self.log(f"[ALIGN] aligned: cup is {dx * 100:+.1f} cm from the arm line")
-                return
-            want = 0.8 * abs(dx)
-            pulse = float(np.clip(want / speed, 0.2, PULSE_MAX_S))
-            self.drive(np.sign(dx) * cmd)
-            time.sleep(pulse)
-            self.stop()
-            time.sleep(SETTLE_S)
-            new_dx = self._dx_still(offs)
-            moved = float((dx - new_dx) * np.sign(dx))
-            self.log(f"[ALIGN] nudge {i + 1}: {cmd:.3f} m/s for {pulse:.1f} s moved "
-                     f"{moved * 100:+.1f} cm; cup now {new_dx * 100:+.1f} cm from the arm line")
-            if moved > 0.0005:
-                speed = float(np.clip(moved / pulse, 1e-4, 0.05))
-            else:
-                speed = max(speed / 2, 1e-4)
-            if moved < want / 3 and pulse >= PULSE_MAX_S:
-                cmd = min(cmd * 1.5, ALIGN_MAX)
-            dx = new_dx
-            best = min(best, abs(dx))
-        if abs(dx) < ALIGN_ACCEPT:
-            self.get_logger().warn(f"accepting alignment {dx * 100:+.1f} cm off "
-                                   f"(target {ALIGN_TOL * 100:.1f} cm)")
-            return
-        raise RuntimeError(f"alignment stalled: still {dx * 100:+.1f} cm off "
-                           f"after {FINE_MAX_NUDGES} nudges (best {best * 100:.1f} cm)")
+    def _align_wrist(self, dx):
+        """Turn the wrist so the grasp point moves `dx` along base x, then check it
+        against a fresh measurement of the cup. Returns the new grasp offsets."""
+        c = self.cfg
+        yaw = M.yaw_for_offset(dx, c["arm_len"], c["max_yaw"], c["yaw_sign"])
+        if yaw is None:
+            raise RuntimeError(f"wrist yaw cannot cover {dx * 100:+.1f} cm "
+                               f"(max_yaw {c['max_yaw']:.2f} rad)")
+        self.log(f"[ALIGN] turning the wrist to {yaw:+.3f} rad to cover {dx * 100:+.1f} cm")
+        self.move_joint_precise("joint_wrist_yaw", yaw, (-1.0, 1.0), tol=0.01)
+        offs = self.arm_offsets()
+        m = self.measure_fresh()
+        if offs is None or m is None:
+            raise RuntimeError("lost the cup or the grasp frame after turning the wrist")
+        err = float(m["cup"][0] - offs["x"])
+        self.log(f"[ALIGN] after the wrist turn the grasp point is {err * 100:+.1f} cm "
+                 f"from the cup (limit {c['yaw_check_tol'] * 100:.1f} cm)")
+        if abs(err) >= c["yaw_check_tol"]:
+            raise RuntimeError(f"wrist yaw left {err:+.3f} m")
+        return offs
 
     def reach(self, offs):
         self.set_phase("REACH", "measuring cup and table with depth")
-        time.sleep(0.5)
-        m = self.measure_avg(8)
+        m = self.measure_fresh(8, full=True)
         if m is None:
-            raise RuntimeError("lost the cup in depth before reaching")
-        self.show(m)
+            raise RuntimeError(f"lost the cup before reaching: {self.last_miss}")
         cup, top, edge = m["cup"], m["table_top"], m["edge"]
         self.log(f"cup center ({cup[0]:.3f}, {cup[1]:.3f}, {cup[2]:.3f}) m, "
                  f"radius {m['radius'] * 100:.1f} cm; table top "
                  f"{'unknown' if top is None else f'{top:.3f} m'}; table edge "
                  f"{'unknown' if edge is None else f'{edge:.3f} m'} from base center")
-        plan, why = P.plan_reach(cup, m["radius"], top, edge, offs)
+        target = np.array(cup, dtype=float)
+        if self.cfg["grasp_height"] >= 0 and top is not None:
+            target[2] = top + self.cfg["grasp_height"]
+            self.log(f"grasping {self.cfg['grasp_height']:.3f} m above the table top")
+        plan, why = P.plan_reach(target, m["radius"], top, edge, offs)
         if plan is None:
             raise RuntimeError(f"not safe to reach: {why}")
         self.log(f"plan: lift {plan['lift']:.3f} m (grasp height {plan['grasp_z']:.3f} m), "
                  f"extend {plan['extension']:.3f} m")
-        self.switch_mode(self.to_position, "position")
         self.move_joint_precise("joint_lift", plan["lift"], (0.0, 1.1))
         self.move_joint_precise("wrist_extension", plan["extension"], (0.0, 0.52))
-        if self.get_parameter("grasp").value:
-            self.move_joints({"joint_gripper_finger_left": GRIPPER_CLOSED}, 2.0)
+        if self.cfg["grasp"]:
+            self.move({"joint_gripper_finger_left": GRIPPER_CLOSED})
 
     def run(self):
         try:
             self.wait_for_data()
+            self.enter_navigation_mode()
             self.aim_head()
-            self.center()
             offs = self.ready_arm()
-            self.align(offs)
+            offs = self.align(offs)
             self.reach(offs)
             self.set_phase("DONE", "gripper is at the cup")
         except Exception as e:  # noqa: BLE001 - report any failure and stop safely
-            self.stop()
+            self.drive(0.0)
+            try:
+                self.stop_the_robot()
+            except Exception:  # noqa: BLE001 - already failing; the base is stopped above
+                pass
             self.set_phase("FAILED", str(e))
+        self.log(f"[timing] total {self.now() - self.t_start[0]:.1f} s "
+                 f"(wall {time.time() - self.t_start[1]:.1f} s)")
         # Keep the windows alive until Ctrl+C
         while rclpy.ok():
-            self.show(self.measure())
+            self.show(self.measure(full=False))
             time.sleep(0.1)
 
 
 def main():
-    rclpy.init()
     node = FindCup()
-    executor = MultiThreadedExecutor()
-    executor.add_node(node)
-    spin = threading.Thread(target=executor.spin, daemon=True)
-    spin.start()
     try:
+        node.start("find_cup")
         node.run()
     except KeyboardInterrupt:
         pass
     finally:
-        node.stop()
+        if hasattr(node, "cmd_vel_pub"):
+            node.drive(0.0)
         cv2.destroyAllWindows()
         rclpy.try_shutdown()
 
