@@ -138,7 +138,7 @@ sets any parameter.
 
 | Parameter | Sim | Robot | Meaning |
 |---|---|---|---|
-| `steps` | `all` | `all` | Run only these steps: any of `aim_head,ready,align,reach` |
+| `steps` | `all` | `all` | Run only these steps: any of `aim_head,ready,align,reach,carry` (`carry` needs `grasp`) |
 | `grasp` | `false` | `false` | Close the gripper at the end |
 | `step_confirm` | `false` | `true` | Before each step, wait for Enter or `/stack_cups/continue` |
 | `show_windows` | `true` | `true` | Show the camera and red-mask debug windows |
@@ -533,8 +533,12 @@ which also sizes the sim's cups).
 - [x] **1.8 Check the grasp worked**: the fingers must stop on something, then stay put
       while the lift rises `grasp_check_lift` (more than the grasp point's distance to
       the cup's top). A reach blocked short of the cup fails too.
-- [ ] **1.9 Lift and retract into the carry pose**: clear the table, arm in, wrist
-      tucked, cup upright.
+- [x] **1.9 Lift and retract into the carry pose** (the `carry` step): the lift rises
+      until the cup's bottom is `carry_clearance` above the table, the arm pulls all the
+      way in, the wrist stays level so the cup stays upright, and the run fails if the
+      fingers close further on the way (the cup dropped).
+  - [ ] Tuck the wrist (`carry_wrist_yaw`, 0 = straight for now): the cup then sits about
+    0.4 m from the base center, outside Nav2's 0.22 m `robot_radius` (see 2.4).
 - [ ] **1.10 Retry on a failed grasp**: open, back off, repeat ALIGN and REACH.
 
 ### 2. Drive to the stacking area with the cup

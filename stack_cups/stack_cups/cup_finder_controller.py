@@ -48,7 +48,7 @@ from stack_cups.robot import CupRobot, JointBlocked, StopRequested
 
 BASE_FRAME = "base_link"
 GRASP_FRAME = "link_grasp_center"
-STEPS = ("aim_head", "ready", "align", "reach")
+STEPS = ("aim_head", "ready", "align", "reach", "carry")
 
 
 class FindCup(CupRobot):
@@ -226,6 +226,26 @@ class FindCup(CupRobot):
             finger, contact = self.close_gripper(c["gripper_closed"], c["gripper_squeeze"],
                                                  c["gripper_max_effort"])
             self.check_grasp(cup, finger, contact)
+            return {"cup": cup, "table_top": top}
+        return None
+
+    def pick_attempt(self):
+        """READY, ALIGN, REACH and (with grasp) CARRY, as far as `steps` allows."""
+        offs = None
+        if self.step("ready", "raise the lift above the cup, straighten the wrist, "
+                              "open the gripper"):
+            offs = self.ready_arm()
+        offs = offs or self.arm_offsets(BASE_FRAME, GRASP_FRAME)
+        if offs is None:
+            raise RuntimeError(f"could not read {GRASP_FRAME} from TF")
+        if self.step("align", "drive along the table until the arm lines up with the cup"):
+            offs = self.align(offs)
+        grasp = None
+        if self.step("reach", "lower to the cup and extend the arm"
+                              + (", then close the gripper" if self.cfg["grasp"] else "")):
+            grasp = self.reach(offs)
+        if grasp is not None and self.step("carry", "lift the cup clear and pull the arm in"):
+            self.carry(grasp)
 
     def check_grasp(self, cup, finger, contact):
         """Roadmap 1.8: raise (so the run ends FAILED) if the gripper is not holding the cup.
@@ -253,6 +273,36 @@ class FindCup(CupRobot):
             raise RuntimeError(f"the cup was not lifted: the fingers closed from {finger:+.3f} "
                                f"to {after:+.3f} while lifting (it slipped or stayed behind)")
 
+    def carry(self, grasp):
+        """Roadmap 1.9: lift the cup clear of the table, pull the arm in, keep it upright.
+
+        The lift rises until the cup's bottom is carry_clearance above the table top (the
+        cup's bottom is estimated from its measured center and cup_height). The wrist stays
+        level (pitch and roll 0), so the cup stays upright, and turns to carry_wrist_yaw.
+        Raises RuntimeError if the fingers close further on the way (the cup dropped)."""
+        c = self.cfg
+        joint = "joint_gripper_finger_left"
+        self.set_phase("CARRY", "lifting the cup clear of the table and pulling the arm in")
+        finger = self.wait_joint_still(joint) or self.joint_pos(joint)
+        lift = self.joint_pos("joint_lift")
+        top = grasp["table_top"]
+        if top is not None:
+            # the lift has risen grasp_check_lift since the cup's center was measured
+            bottom = grasp["cup"][2] - 0.5 * c["cup_height"] + c["grasp_check_lift"]
+            lift += max(0.0, top + c["carry_clearance"] - bottom)
+        lift = min(lift, 1.05)
+        self.move({"joint_lift": lift})
+        self.move({"wrist_extension": 0.0})
+        self.move({"joint_wrist_yaw": c["carry_wrist_yaw"], "joint_wrist_pitch": 0.0,
+                   "joint_wrist_roll": 0.0})
+        after = self.wait_joint_still(joint) or self.joint_pos(joint)
+        self.log(f"[CARRY] lift {self.joint_pos('joint_lift'):.3f} m, extension "
+                 f"{self.joint_pos('wrist_extension'):.3f} m, "
+                 f"fingers {finger:+.3f} -> {after:+.3f}")
+        if finger - after > c["grasp_slip_tol"]:
+            raise RuntimeError(f"dropped the cup while carrying: the fingers closed from "
+                               f"{finger:+.3f} to {after:+.3f}")
+
     def run(self):
         try:
             unknown = self.steps - set(STEPS)
@@ -263,22 +313,11 @@ class FindCup(CupRobot):
             self.enter_navigation_mode()
             if self.cfg["aim_head"] and self.step("aim_head", "point the head at the table"):
                 self.aim_head()
-            offs = None
-            if self.step("ready", "raise the lift above the cup, straighten the wrist, "
-                                  "open the gripper"):
-                offs = self.ready_arm()
-            offs = offs or self.arm_offsets(BASE_FRAME, GRASP_FRAME)
-            if offs is None:
-                raise RuntimeError(f"could not read {GRASP_FRAME} from TF")
-            if self.step("align", "drive along the table until the arm lines up with the cup"):
-                offs = self.align(offs)
-            if self.step("reach", "lower to the cup and extend the arm"
-                                  + (", then close the gripper" if self.cfg["grasp"] else "")):
-                self.reach(offs)
+            self.pick_attempt()
             ran = [s for s in STEPS if s in self.steps]
             done = "gripper is at the cup"
             if "reach" in self.steps and self.cfg["grasp"]:
-                done = "holding the cup"
+                done = ("carrying the cup" if "carry" in self.steps else "holding the cup")
             self.set_phase("DONE", done if "reach" in self.steps else f"ran {','.join(ran)}")
         except StopRequested as e:
             self.safe_stop()

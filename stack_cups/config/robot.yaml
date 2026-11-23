@@ -35,6 +35,8 @@
     gripper_max_effort: 0.0   # verify: set from joint_states effort when gripping a cup
     grasp_check_lift: 0.08      # > grasp point to cup top
     grasp_slip_tol: 0.01
+    carry_clearance: 0.05
+    carry_wrist_yaw: 0.0       # straight: see params.py
     ready_above_cup: 0.05     # higher hides the cup from the head camera
     v_max: 0.05
     v_min: 0.01               # verify on the robot: slowest command that still moves the base
