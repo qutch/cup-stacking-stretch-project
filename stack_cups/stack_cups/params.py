@@ -183,7 +183,7 @@ CARRY = {
     "tape_head_pan": -1.2,  # rad, where to look first from stacking_pose (then the head
     "tape_head_tilt": -0.7,  # follows the tape)
     "tape_square_tol": 0.02,  # rad, base parallel to the tape's edge within this
-    "tape_square_tries": 3,  # turns to get there
+    "tape_square_tries": 5,  # turns to get there (sim: short turns end 1-3 deg off)
     "w_decel": 0.5,  # rad/s^2, how hard turns slow down near the target heading
     # Arm extension that should reach the tape's center from where the robot parks (m).
     # Nav2 stops up to ~25 cm off, so if the extension needed is more than reach_tol from
