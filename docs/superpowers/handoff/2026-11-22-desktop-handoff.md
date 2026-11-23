@@ -164,21 +164,18 @@ grep -vE "move_to_pose" ~/runB.log | grep -E "\[|Error|Traceback|WARN"     # sum
 
 ## 9. What is left (plan tasks)
 
-- Tasks 1-4: complete. Tasks 5-6: code done; **sim verification pending**:
-  - run A: `-p grasp:=true -p use_wrist_yaw:=false`
-  - run B: `-p grasp:=true` — **done (B3), passed**
-  - D1: `-p odom_topic:=/nope` must fail fast naming the topic (the subscription ignored
-    this parameter until `6e10cac`)
-  - D2: `-p head_pan:=0.0` must fail cleanly; then `ros2 topic echo --once /stretch/cmd_vel`
-    shows zero speed
-  - run C (Task 6): `python3 sim/nudge_base.py 0.09`, then `find_cup -p grasp:=true`;
-    check the fingers don't hit the cup at the yaw used
-- Task 7: several cups (`find_red_blobs`, pick the cup nearest the arm line, red HSV ranges
-  and `min_area` as parameters, `test_perception.py`, a second red cup in
-  `sim/stretch_table_scene.py` or the sim scene).
-- Task 8: README update (phases, parameters, helper scripts, roadmap 0.1/1.4/1.1/1.6/0.2);
-  final runs from about 5, 20 and 40 cm offsets; add the after-timings to the baseline file.
+Update 2026-11-22 (desktop, after PR #6 merged; results in the timing file):
+
+- Tasks 1-4: complete. Tasks 5-6: **verified** in the patched sim with the viewer on:
+  run A passed, run B passed earlier (B3), D1 passed (now fails in 5 s), D2 passed.
+  Run C found a false DONE (extension blocked short); a blocked reach now fails.
+- Task 7: several cups. The 6-cup task scene now works (the raised gripper used to hide
+  the target; `ready_above_cup` 0.05). Still: pick the closest loose cup, red HSV ranges
+  and `min_area` as parameters, `test_perception.py`.
+- Task 8: README update, final runs from about 5, 20 and 40 cm offsets.
 - Then a whole-branch review, and the list of rulings below goes to the user.
+- Superseded by PR #6: the "do not modify stretch_ros2" agreement (patches are fine now),
+  and facts 1-4 in section 6 (the patches fix them at the source).
 
 ## 10. Decisions made on the user's behalf (rulings) and their cost if wrong
 
