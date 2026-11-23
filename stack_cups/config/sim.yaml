@@ -32,6 +32,8 @@
     show_windows: true
     gripper_open: 0.3         # fingertips ~12 cm apart: clears a 9.5 cm rim
     gripper_closed: -0.1
+    gripper_squeeze: 0.05
+    gripper_max_effort: 0.0   # the sim reports no gripper effort
     ready_above_cup: 0.25
     v_max: 0.15
     v_min: 0.06               # sim only: the sim's wheel friction stalls slower commands

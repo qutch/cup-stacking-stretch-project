@@ -222,7 +222,8 @@ class FindCup(CupRobot):
             # e.g. a finger hit the cup: closing here would knock it over or miss it
             raise RuntimeError(f"the arm was blocked before reaching the cup: {e}") from None
         if self.cfg["grasp"]:
-            self.move({"joint_gripper_finger_left": self.cfg["gripper_closed"]})
+            c = self.cfg
+            self.close_gripper(c["gripper_closed"], c["gripper_squeeze"], c["gripper_max_effort"])
 
     def run(self):
         try:

@@ -517,8 +517,11 @@ which also sizes the sim's cups).
   - [ ] Add a cup height measurement as a cross-check against the parameters.
 - [ ] **1.6 Move the gripper to the cup** (partial: works)
   - Grasp at a set height on the cup (from parameters), not the cup's center.
-- [ ] **1.7 Close the gripper by effort** (partial: closes to a fixed position)
-  - Hold firmly without crushing real cups.
+- [ ] **1.7 Close the gripper by effort** (partial: closes until the fingers stop on the
+      cup, then squeezes `gripper_squeeze` past that; holds a 20 g sim cup)
+  - On the robot: set `gripper_max_effort` from the effort `joint_states` reports while
+    holding a cup, and tune `gripper_squeeze` so real cups are not crushed (the sim
+    reports no gripper effort).
 - [ ] **1.8 Check the grasp worked**: gripper position/effort, or the cup is gone from
       the table.
 - [ ] **1.9 Lift and retract into the carry pose**: clear the table, arm in, wrist

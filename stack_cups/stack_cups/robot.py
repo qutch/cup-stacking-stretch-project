@@ -400,6 +400,47 @@ class CupRobot(hm.HelloNode):
             return float(js.position[js.name.index(name)])
         return None
 
+    def joint_effort(self, name):
+        """The joint's effort from joint_states, or None if not reported (the sim reports
+        none for the gripper: all zeros count as not reported)."""
+        js = self.joint_state
+        if name in js.name and len(js.effort) == len(js.name):
+            e = float(js.effort[js.name.index(name)])
+            return e if e != 0.0 else None
+        return None
+
+    def close_gripper(self, closed, squeeze, max_effort=0.0, step=0.05, stall_tol=0.01):
+        """Close the gripper until it touches something, then squeeze a little (roadmap 1.7).
+
+        Closes in `step`s toward `closed` (finger units). Contact is when the fingers stop
+        `stall_tol` short of a step's command, or the effort exceeds `max_effort` (> 0;
+        only where joint_states reports effort, i.e. not in the sim). Then holds at the
+        contact position minus `squeeze`, so the grip force is set by `squeeze`, not by
+        how far `closed` is past the object. Returns (finger position, contact)."""
+        joint = "joint_gripper_finger_left"
+        pos = self.joint_pos(joint)
+        if pos is None:
+            raise RuntimeError(f"no {joint} in joint_states")
+        cmd = pos
+        while cmd > closed:
+            cmd = max(cmd - step, closed)
+            try:
+                self.move({joint: cmd})
+            except JointBlocked:
+                pass  # the fingers stopped on something: that is what we look for below
+            pos = self.wait_joint_still(joint) or self.joint_pos(joint)
+            effort = self.joint_effort(joint)
+            if pos - cmd > stall_tol or (max_effort > 0.0 and effort is not None
+                                         and abs(effort) > max_effort):
+                hold = max(pos - squeeze, closed)
+                self.move({joint: hold})
+                self.get_logger().info(
+                    f"gripper touched something at {pos:+.3f} (commanded {cmd:+.3f}, effort "
+                    f"{'n/a' if effort is None else f'{effort:.1f}'}); holding at {hold:+.3f}")
+                return self.wait_joint_still(joint) or self.joint_pos(joint), True
+        self.get_logger().info(f"gripper closed to {pos:+.3f} without touching anything")
+        return pos, False
+
     def wait_joint_still(self, name, still_m=0.001, window_s=0.2, timeout=3.0):
         """Wait until the joint moved less than `still_m` over `window_s` (ROS time);
         returns its position."""
