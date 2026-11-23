@@ -182,6 +182,10 @@ CARRY = {
     # --- finding the tape (roadmap 2.1) and parking at it (2.6)
     "tape_head_pan": -1.2,  # rad, where to look first from stacking_pose (then the head
     "tape_head_tilt": -0.7,  # follows the tape)
+    # rad, more head pans to try in order when the tape is not in view at tape_head_pan:
+    # ahead and behind along the table (e.g. starting from task 1's spot when the cups
+    # and the tape are on one table). Empty = look once.
+    "tape_search_pans": [-0.8, -0.4, -1.6, -2.0, -2.4],
     "tape_square_tol": 0.02,  # rad, base parallel to the tape's edge within this
     "tape_square_tries": 5,  # turns to get there (sim: short turns end 1-3 deg off)
     "w_decel": 0.5,  # rad/s^2, how hard turns slow down near the target heading

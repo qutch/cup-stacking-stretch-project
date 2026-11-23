@@ -426,6 +426,7 @@ turns, wrist yaw, measuring, tape colour and Nav2 time limit use `find_cup`'s va
 | `robot_radius`, `carry_margin` | `0.22`, `0.05` m | Nav2's outline: the stowed base, and the room around the cup while carrying |
 | `held_min`, `grip_tol` | `0.05`, `0.05` | A cup is held if the fingers stopped `held_min` short of closed; it is lost if they close that far, or open by `grip_tol` |
 | `tape_head_pan`, `tape_head_tilt` | `-1.2`, `-0.7` rad | Where the head looks for the tape first |
+| `tape_search_pans` | `[-0.8, -0.4, -1.6, -2.0, -2.4]` rad | More head pans to try, in order, if the tape is not in view |
 | `tape_square_tol`, `tape_square_tries` | `0.02` rad, `5` | Parallel enough to the tape, and turns to get there |
 | `w_decel` | `0.5` | How hard turns slow down near the target heading (`w_max`, `w_min` are `find_cup`'s) |
 | `reach_target`, `reach_tol` | `0.31`, `0.12` m | Arm extension that should reach the area's center from where the robot parks; sidestep if it is off by more than `reach_tol` |
@@ -441,6 +442,12 @@ with a sidestep); opening the gripper while Nav2 drove stopped the robot at once
 (`[FAILED] lost the cup while driving`), and `/stack_cups/stop` stopped it with the cup still
 held. Nav2 stops about 25 cm short; the camera does the rest. After the merge, base drives
 alone ended 1-3 cm off and ALIGN failed in 2 of 2 runs, hence the wrist.
+
+When the cups and the taped area are on the same table, Nav2 is not needed: after task 1
+(`[DONE] carrying the cup`), the base is already parallel to that table's edge, so
+`carry_steps:=find_tape,square,align` finds the tape (the head searches along the table),
+squares up to its edge and drives along the table until the cup lines up with its center.
+ALIGN drives by odometry, without obstacle avoidance: keep the floor along the table clear.
 
 On the real robot: run Nav2 with `ros2 launch stack_cups robot_nav.launch.py` (step 5 of
 [First runs on the real robot](#first-runs-on-the-real-robot)), measure `start_pose` and

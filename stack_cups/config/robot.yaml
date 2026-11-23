@@ -113,6 +113,7 @@
     grip_tol: 0.05            # verify on the robot
     tape_head_pan: -1.2
     tape_head_tilt: -0.7
+    tape_search_pans: [-0.8, -0.4, -1.6, -2.0, -2.4]
     tape_square_tol: 0.02     # verify on the robot: real depth is noisier than the sim's
     tape_square_tries: 5
     w_decel: 0.3

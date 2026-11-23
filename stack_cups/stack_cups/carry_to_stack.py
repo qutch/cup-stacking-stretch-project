@@ -8,7 +8,8 @@ sim/handoff_cup.py stands in for task 1's pick-up). Phases (each logged as it st
                  its driver started) combined with the odometry since then
   3. NAVIGATE  - (2.3-2.5) Nav2 to stacking_pose, with an outline that includes the arm and
                  the cup; stops at once if the grip changes (the cup slipped or fell)
-  4. FIND_TAPE - (2.1) point the head where the tape should be and find it
+  4. FIND_TAPE - (2.1) point the head where the tape should be and find it (if it is not
+                 in view, try each of tape_search_pans)
   5. SQUARE    - (2.6) turn in place until the base is parallel to the tape's edge; if the
                  taped area's center is not about reach_target of arm extension away
                  (Nav2 stops up to ~25 cm off), sidestep and square up again
@@ -143,9 +144,11 @@ class CarryToStack(CupRobot):
         return TP.locate_tape(snap["img"], snap["depth"], snap["K_color"], snap["K_depth"],
                               snap["T_base"], snap["T_cd"], colour=colour)
 
-    def look_at_tape(self):
-        """Point the head at the tape's last known center, or the first look from params."""
-        pan, tilt = self.cfg["tape_head_pan"], self.cfg["tape_head_tilt"]
+    def look_at_tape(self, pan=None):
+        """Point the head at the tape's last known center; before the tape is seen, at
+        `pan` (default tape_head_pan) and tape_head_tilt."""
+        pan = self.cfg["tape_head_pan"] if pan is None else pan
+        tilt = self.cfg["tape_head_tilt"]
         eye = self.lookup(BASE_FRAME, EYE_FRAME)
         if self.tape_at is not None and eye is not None:
             xy = M.odom_to_base(self.tape_at[:2], self.odom_pose())
@@ -153,10 +156,10 @@ class CarryToStack(CupRobot):
         self.move({"joint_head_pan": float(np.clip(pan, *PAN_LIMITS)),
                    "joint_head_tilt": float(np.clip(tilt, *TILT_LIMITS))})
 
-    def tape_fresh(self):
+    def tape_fresh(self, pan=None):
         """The tape measured while stopped, with the head on it: median center ("tape",
-        base_link) and median yaw over the samples, or None."""
-        self.look_at_tape()
+        base_link) and median yaw over the samples, or None. `pan`: see look_at_tape."""
+        self.look_at_tape(pan)
         c = self.cfg
         m = self.camera.measure_fresh(self.measure_tape, c["samples"], c["settle_s"],
                                       c["sample_dt"], c["max_spread"], key="tape")
@@ -254,10 +257,21 @@ class CarryToStack(CupRobot):
         self.check_cup("after driving")
 
     def find_tape(self, offs):
+        """Look at tape_head_pan, then at each of tape_search_pans until the tape is in
+        view (from task 1's spot on the same table it may be ahead or behind)."""
         self.set_phase("FIND_TAPE", "pointing the head at the stacking area")
-        m = self.tape_fresh()
+        pans = [float(self.cfg["tape_head_pan"])] + [float(p) for p in self.cfg["tape_search_pans"]]
+        m = None
+        for i, pan in enumerate(pans):
+            if i:
+                self.log(f"[FIND_TAPE] no tape in view at head pan {pans[i - 1]:+.2f} "
+                         f"({self.camera.last_miss}); looking at {pan:+.2f}")
+            m = self.tape_fresh(pan)
+            if m is not None:
+                break
         if m is None:
-            raise RuntimeError(f"no tape found: {self.camera.last_miss}")
+            raise RuntimeError(f"no tape found at head pans "
+                               f"{', '.join(f'{p:+.2f}' for p in pans)}: {self.camera.last_miss}")
         m = self.tape_fresh() or m  # a second look with the head on the center
         self.log(f"[FIND_TAPE] {self.describe(m, offs)}")
         return m
