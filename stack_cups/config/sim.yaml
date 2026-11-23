@@ -57,9 +57,9 @@
     search_drive_max: 1.2
     search_samples: 3
     ready_above_cup: 0.05     # higher hides the cup from the head camera
-    v_max: 0.15
-    v_min: 0.06               # sim only: the sim's wheel friction stalls slower commands
-    decel: 0.1
+    v_max: 0.3
+    v_min: 0.06               # sim: worked before the wheel gear fix; lower is untested
+    decel: 0.2
     drive_tol: 0.003
     align_tol: 0.008
     max_drives: 3

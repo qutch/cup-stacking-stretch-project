@@ -69,6 +69,11 @@ RUNSTOP_TOPIC = "/is_runstopped"
 # applies velocity 0.
 CMD_VEL_HZ = 10.0
 DRIVE_HZ = 20.0
+# drive_by holds the starting heading: turn rate = -HEADING_GAIN * heading error, at most
+# HEADING_MAX_W. Without it the sim base turned up to 3.5 deg in a 0.4 m drive at
+# 0.3 m/s, which moves a cup 0.55 m to the side by ~3 cm along the arm line.
+HEADING_GAIN = 2.0  # (rad/s) per rad
+HEADING_MAX_W = 0.2  # rad/s
 # Safety net if the clock stops (e.g. the sim froze): a wait gives up once the ROS clock
 # has not moved for this much wall time. (Not a cap on total wall time: the sim can run
 # at under 1% of real time, so a long move legitimately takes many wall minutes.)
@@ -114,6 +119,7 @@ class CupRobot(hm.HelloNode):
         # HelloNode creates the actual ROS node in main(); see start()
         hm.HelloNode.__init__(self)
         self.cmd_v = 0.0
+        self.cmd_w = 0.0  # rad/s, only drive_by's heading hold turns the base
         self.nav_active = False
         self._odom = None
         self.odom_count = 0
@@ -532,7 +538,7 @@ class CupRobot(hm.HelloNode):
         """Navigation mode: the base takes cmd_vel, every other joint still takes
         move_to_pose goals (HelloNode logs a 'position mode' warning for each one)."""
         self.switch_to_navigation_mode()
-        self.cmd_v = 0.0
+        self.cmd_v = self.cmd_w = 0.0
         self.nav_active = True
 
     def _on_odom(self, msg):
@@ -547,6 +553,7 @@ class CupRobot(hm.HelloNode):
     def _publish_cmd(self):
         msg = Twist()
         msg.linear.x = float(self.cmd_v)
+        msg.angular.z = float(self.cmd_w)
         self.cmd_vel_pub.publish(msg)
 
     def _stream_loop(self):
@@ -560,24 +567,29 @@ class CupRobot(hm.HelloNode):
                     return
             time.sleep(1.0 / CMD_VEL_HZ)
 
-    def drive(self, v):
-        """Set the base speed, capped at max_base_speed; the stream thread keeps re-sending
-        it to the driver. Speed 0 is always allowed; any other speed raises StopRequested
-        after a stop."""
+    def drive(self, v, w=0.0):
+        """Set the base speed (and turn rate w, rad/s, capped at HEADING_MAX_W), capped at
+        max_base_speed; the stream thread keeps re-sending it to the driver. Speed 0 is
+        always allowed (and stops turning too); any other speed raises StopRequested after
+        a stop."""
         if v != 0.0:
             self.check_stop()
+        else:
+            w = 0.0
         cap = float(self.rcfg["max_base_speed"])
         with self._pub_lock:
             self.cmd_v = float(np.clip(v, -cap, cap))
+            self.cmd_w = float(np.clip(w, -HEADING_MAX_W, HEADING_MAX_W))
             self._publish_cmd()
 
     def drive_by(self, distance, *, v_max, v_min, decel, tol=0.003, stall_s=2.0,
                  timeout_s=None, max_reversals=3):
-        """Drive `distance` meters along the current heading, steered by /odom.
+        """Drive `distance` meters along the current heading, steered by /odom, turning
+        back to the starting heading as it goes (HEADING_GAIN).
         Returns the progress reached; raises RuntimeError on a stall or timeout
         (both in ROS time). The default timeout is 30 s plus twice the time the distance
-        takes at v_min (the sim base runs slower than commanded: ~3.5 cm/s at 15 cm/s). The command is always left at 0, even on an exception,
-        a stop request or Ctrl+C."""
+        takes at v_min, so long drives (SEARCH) do not time out at low speeds. The
+        command is always left at 0, even on an exception, a stop request or Ctrl+C."""
         if not self.nav_active:
             raise RuntimeError("drive_by needs navigation mode")
         start = self.odom_pose()
@@ -616,7 +628,9 @@ class CupRobot(hm.HelloNode):
                 if self.clock_stalled():
                     raise RuntimeError(f"the ROS clock stopped for {CLOCK_STALL_S:.0f} s "
                                        f"during drive_by (did the sim freeze?)")
-                self.drive(v)
+                yaw_err = float(np.arctan2(np.sin(self.odom_pose()[2] - start[2]),
+                                           np.cos(self.odom_pose()[2] - start[2])))
+                self.drive(v, -HEADING_GAIN * yaw_err)
                 self._idle(1.0 / DRIVE_HZ)
         finally:
             self.drive(0.0)

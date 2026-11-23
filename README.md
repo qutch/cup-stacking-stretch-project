@@ -308,11 +308,10 @@ Use `sim_nav.launch.py` in the sim, not the starter's `navigation.launch.py use_
   robot's driver and lidar.
 - The starter's remap of Nav2's `/cmd_vel` to the driver's `/stretch/cmd_vel` is commented
   out, so the base never moves. Check this on the real robot too.
-- The sim's base reaches only about a quarter of the commanded speed (its wheel actuators
-  have gear 3, which the sim driver's wheel-speed math leaves out, plus heavy friction; top
-  speed about 0.09 m/s). `sim_nav.launch.py` gives Nav2's progress check 30 s instead of
-  10 s and keeps it from commanding crawl speeds. `find_cup` is not affected: it steers its
-  base moves by odometry.
+- The sim's base used to reach only about a quarter of the commanded speed (a wheel gear
+  the sim driver left out; fixed in `stretch_mujoco.patch`). `sim_nav.launch.py` still
+  gives Nav2's progress check 30 s instead of 10 s and keeps it from commanding crawl
+  speeds; with the fix that may no longer be needed (roadmap 1.3).
 - It uses the starter's `nav2_params.yaml`. The starter's default, `nav2_voxel_params.yaml`,
   needs the spatio-temporal voxel layer plugin
   (`sudo apt install ros-humble-spatio-temporal-voxel-layer`).
@@ -373,10 +372,11 @@ Rebuild `stretch_simulation` and `parcs_stretch_nav2` after either. They were ma
 | Rendering a camera frame held the physics lock, so frames slower than the camera rate (30 Hz) stalled physics | Hold the lock only while copying the scene; render outside it | task scene: 0.55× → 1.0× real time; slow frames now lower the camera rate instead |
 | The ROS side and the sim process both edit the shared command record, without a common lock | Share one lock | lost commands: 1 in 60 → 0 in 100 |
 | "Move the base 0 m" (sent for 1 s after `cmd_vel` stops) drove the base backward | Treat it as a stop | no more backward creep |
+| The wheel actuators have gear 3, but the wheel speed was sent as the control without it, and `ctrlrange` ±6 capped the base at ~0.09 m/s | Multiply by the gear and widen `ctrlrange` to fit | 4 s at 0.15 m/s: 0.039 → 0.134 m/s (0.30: 0.087 → 0.274, the rest is spin-up) |
 
-Not fixed: the base follows `cmd_vel` at only about a quarter of the commanded speed (see
-[Navigation in the sim](#navigation-in-the-sim)). Fixing it changes how fast `find_cup`'s
-base moves go, so its sim parameters would need re-tuning.
+With the base at full speed, `find_cup`'s sim drives use `v_max` 0.3 and `decel` 0.2
+(were 0.15 and 0.1): a search plus pick-up 1.2 m away took 73.5 s before the fix, 48 s
+after it, 40 s with the new speeds; ALIGN still lines up within 0.5 cm.
 
 **`stretch_ros2.patch`** (the ROS driver):
 

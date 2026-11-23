@@ -97,9 +97,9 @@ FIND_CUP = {
     # camera and a cup on a 74 cm table, so ALIGN lost the cup after the first drive.
     "ready_above_cup": 0.05,
     # --- base moves (odometry-steered)
-    "v_max": 0.15,  # m/s, base speed far from the target
+    "v_max": 0.3,  # m/s, base speed far from the target (max_base_speed caps it)
     "v_min": 0.06,  # m/s, slowest command that still moves the base (sim: wheel friction)
-    "decel": 0.1,  # m/s^2, how hard the base slows down near the target
+    "decel": 0.2,  # m/s^2, how hard the base slows down near the target
     "drive_tol": 0.003,  # m, a drive stops this close to its target
     "align_tol": 0.008,  # m, grasps tested reliable within +/-1 cm of the arm line
     "max_drives": 3,
