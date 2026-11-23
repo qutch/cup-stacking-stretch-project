@@ -64,9 +64,14 @@ def _align_wrist(robot, measure, dx, cfg, key):
     """Turn the wrist so the grasp point moves `dx` along base x, then check it against
     a fresh measurement. Returns the new grasp offsets."""
     log = robot.get_logger().info
-    yaw = M.yaw_for_offset(dx, cfg["arm_len"], cfg["max_yaw"], cfg["yaw_sign"])
+    # dx is measured from the grasp point as it is now, so start from the current yaw
+    # (READY straightens the wrist, but steps:=align,reach skips READY)
+    yaw0 = robot.joint_pos("joint_wrist_yaw")
+    if yaw0 is None:
+        raise RuntimeError("no joint_wrist_yaw in joint_states")
+    yaw = M.yaw_for_offset(dx, cfg["arm_len"], cfg["max_yaw"], cfg["yaw_sign"], yaw0)
     if yaw is None:
-        raise RuntimeError(f"wrist yaw cannot cover {dx * 100:+.1f} cm "
+        raise RuntimeError(f"wrist yaw cannot cover {dx * 100:+.1f} cm from yaw {yaw0:+.3f} "
                            f"(max_yaw {cfg['max_yaw']:.2f} rad)")
     log(f"[ALIGN] turning the wrist to {yaw:+.3f} rad to cover {dx * 100:+.1f} cm")
     robot.move_joint_precise("joint_wrist_yaw", yaw, (-1.0, 1.0), tol=0.01)
