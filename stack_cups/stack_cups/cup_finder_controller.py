@@ -309,6 +309,9 @@ class FindCup(CupRobot):
             raise RuntimeError(f"not safe to reach: {why}")
         self.log(f"plan: lift {plan['lift']:.3f} m (grasp height {plan['grasp_z']:.3f} m), "
                  f"extend {plan['extension']:.3f} m")
+        opening = self.fit_opening(m["radius"])
+        if opening is not None:
+            self.move({"joint_gripper_finger_left": opening})
         try:
             self.move_joint_precise("joint_lift", plan["lift"], (0.0, 1.1))
             self.move_joint_precise("wrist_extension", plan["extension"], (0.0, 0.52))
@@ -322,6 +325,22 @@ class FindCup(CupRobot):
             self.check_grasp(cup, finger, contact)
             return {"cup": cup, "table_top": top}
         return None
+
+    def fit_opening(self, radius):
+        """Roadmap 1.6: open the fingers only as wide as the cup needs (its measured width
+        plus grasp_open_margin each side), at most gripper_open, so they clear things
+        next to the cup. Finger position for a width w: gripper_fit_offset +
+        gripper_fit_per_m * w (fitted from where the sim fingers stopped on a 4 cm
+        cylinder and a 7.75 cm cup). None = keep gripper_open (gripper_fit_per_m 0)."""
+        c = self.cfg
+        if c["gripper_fit_per_m"] <= 0:
+            return None
+        width = 2.0 * radius + 2.0 * c["grasp_open_margin"]
+        pos = c["gripper_fit_offset"] + c["gripper_fit_per_m"] * width
+        pos = float(np.clip(pos, c["gripper_closed"], c["gripper_open"]))
+        self.log(f"[REACH] opening the gripper to {pos:+.3f} for a {radius * 200:.1f} cm cup "
+                 f"(+{c['grasp_open_margin'] * 100:.1f} cm each side)")
+        return pos
 
     def pick_attempt(self):
         """READY, ALIGN, REACH and (with grasp) CARRY, as far as `steps` allows."""
@@ -382,8 +401,8 @@ class FindCup(CupRobot):
         lift = self.joint_pos("joint_lift")
         top = grasp["table_top"]
         if top is not None:
-            # the lift has risen grasp_check_lift since the cup's center was measured
-            bottom = grasp["cup"][2] - 0.5 * c["cup_height"] + c["grasp_check_lift"]
+            # the cup stood on the table; the lift has risen grasp_check_lift since
+            bottom = top + c["grasp_check_lift"]
             lift += max(0.0, top + c["carry_clearance"] - bottom)
         lift = min(lift, 1.05)
         self.move({"joint_lift": lift})

@@ -31,6 +31,9 @@
     show_windows: true
     gripper_open: 0.3         # verify on the robot: real finger units differ from the sim's
     gripper_closed: -0.1      # verify on the robot: how far closing may go
+    gripper_fit_per_m: 0.0       # robot finger units differ: fit them, then set
+    gripper_fit_offset: -0.284
+    grasp_open_margin: 0.015
     gripper_squeeze: 0.05     # verify on the robot (finger units)
     gripper_max_effort: 0.0   # verify: set from joint_states effort when gripping a cup
     grasp_check_lift: 0.08      # > grasp point to cup top
@@ -66,7 +69,7 @@
     sample_dt: 0.07
     samples: 5
     max_spread: 0.01
-    grasp_height: -1.0
+    grasp_height: 0.06        # verify: half the real cup's height
     use_wrist_yaw: true
     max_yaw: 0.25
     arm_len: 0.270            # verify on the robot (sim/check_robot_layer.py measures it)

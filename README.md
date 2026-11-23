@@ -536,8 +536,16 @@ which also sizes the sim's cups).
 - [x] **1.4 Center the cup and line it up with the arm** (about ±1 cm; slow in the sim)
 - [x] **1.5 Measure the cup and table, check the reach is safe**
   - [ ] Add a cup height measurement as a cross-check against the parameters.
-- [ ] **1.6 Move the gripper to the cup** (partial: works)
-  - Grasp at a set height on the cup (from parameters), not the cup's center.
+- [x] **1.6 Move the gripper to the cup**
+  - [x] Grasp at a set height: `grasp_height` (0.06 m) above the measured table top. The
+    measured center sat ~2.5 cm high (the camera sees the cup's top and inside more).
+  - [x] Open only as wide as the cup needs before reaching (measured width +
+    `grasp_open_margin` each side, at most `gripper_open`; `gripper_fit_*` maps a width
+    to a finger position). The default scene's run C was blocked 3 cm short: with the
+    fingers 14 cm apart and the wrist turned, a finger hit the box 6 cm from the red
+    cylinder. Now it opens to +0.13 there and reaches; task cups still get +0.3.
+  - [ ] On the robot: fit `gripper_fit_per_m` / `gripper_fit_offset` (robot finger units
+    differ; 0 keeps `gripper_open`) and set `grasp_height` from the real cups.
 - [ ] **1.7 Close the gripper by effort** (partial: closes until the fingers stop on the
       cup, then squeezes `gripper_squeeze` past that; holds a 20 g sim cup)
   - On the robot: set `gripper_max_effort` from the effort `joint_states` reports while

@@ -47,6 +47,13 @@ FIND_CUP = {
     # box next to the red cylinder in stretch_mujoco's default scene.
     "gripper_open": 0.3,
     "gripper_closed": -0.1,  # how far closing may go (the fingers stop on the cup first)
+    # Open only as wide as the cup needs before reaching (roadmap 1.6): finger position
+    # gripper_fit_offset + gripper_fit_per_m * (cup width + 2 * grasp_open_margin), at most
+    # gripper_open. Sim fit: the fingers stop at -0.034 on a 4 cm cylinder, +0.20 on a
+    # 7.75 cm cup. gripper_fit_per_m 0 = always open to gripper_open.
+    "gripper_fit_per_m": 6.24,
+    "gripper_fit_offset": -0.284,
+    "grasp_open_margin": 0.015,  # m, finger clearance each side of the cup
     # --- grasping (roadmap 1.7, 1.8)
     # Squeeze this far past where the fingers touched the cup: sets the grip force
     # (the gripper is position-controlled), instead of how far "closed" is past the cup.
@@ -109,7 +116,10 @@ FIND_CUP = {
     "sample_dt": 0.1,  # s between samples (one sim render)
     "samples": 5,  # measurements per position (median)
     "max_spread": 0.01,  # m, if samples spread more, take more
-    "grasp_height": -1.0,  # m above the table top to grasp at; < 0 = cup center
+    # m above the table top to grasp at (roadmap 1.6): half of cup_height. The measured
+    # center sits ~2.5 cm too high (the camera sees the top and inside of the cup more
+    # than its lower half). < 0 = grasp at the measured center.
+    "grasp_height": 0.06,
     # --- wrist yaw covers the last few cm (measured with sim/check_robot_layer.py)
     "use_wrist_yaw": True,
     "max_yaw": 0.25,  # rad (~14 deg): about +/-6.7 cm of sideways reach
