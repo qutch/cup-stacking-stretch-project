@@ -100,7 +100,7 @@ index e5abc8e..7e33571 100644
      def pull_status(self):
          """
 diff --git a/stretch_mujoco/mujoco_server_camera_manager.py b/stretch_mujoco/mujoco_server_camera_manager.py
-index 5720b17..7c65087 100644
+index 5720b17..b73787e 100644
 --- a/stretch_mujoco/mujoco_server_camera_manager.py
 +++ b/stretch_mujoco/mujoco_server_camera_manager.py
 @@ -110,6 +110,8 @@ class MujocoServerCameraManagerSync:
@@ -112,6 +112,18 @@ index 5720b17..7c65087 100644
  
          from stretch_mujoco.mujoco_server_passive import MujocoServerPassive
  
+@@ -134,7 +136,10 @@ class MujocoServerCameraManagerSync:
+         with self.camera_lock:
+             renderer.update_scene(data=self.mujoco_server.mjdata, camera=camera.camera_name_in_mjcf)
+ 
+-            render = renderer.render()
++        # Only update_scene reads mjdata, so render outside the lock and let physics keep
++        # stepping. Rendering under the lock starved the physics thread (sim time almost
++        # stopped) whenever a frame took longer than the camera period.
++        render = renderer.render()
+ 
+         post_render = camera.post_processing_callback
+         if post_render:
 diff --git a/stretch_mujoco/mujoco_server_passive.py b/stretch_mujoco/mujoco_server_passive.py
 index 864a626..086a85b 100644
 --- a/stretch_mujoco/mujoco_server_passive.py

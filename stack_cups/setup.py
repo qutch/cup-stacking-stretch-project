@@ -29,6 +29,7 @@ setup(
     entry_points={
         "console_scripts": [
             "find_cup = stack_cups.cup_finder_controller:main",
+            "sim_scene = stack_cups.sim_scene:main",
         ],
     },
 )

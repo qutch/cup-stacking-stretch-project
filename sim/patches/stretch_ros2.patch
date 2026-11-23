@@ -1,8 +1,8 @@
 diff --git a/stretch_simulation/launch/stretch_mujoco_driver.launch.py b/stretch_simulation/launch/stretch_mujoco_driver.launch.py
-index 5d80a83..89d40e8 100644
+index 5d80a83..1386da7 100644
 --- a/stretch_simulation/launch/stretch_mujoco_driver.launch.py
 +++ b/stretch_simulation/launch/stretch_mujoco_driver.launch.py
-@@ -72,6 +72,14 @@ def generate_launch_description():
+@@ -72,6 +72,31 @@ def generate_launch_description():
              "use_cameras", default_value="false", choices=["true", "false"]
          )
      )
@@ -14,14 +14,33 @@ index 5d80a83..89d40e8 100644
 +            "cam_d405_rgb, cam_d405_depth, cam_d435i_rgb, cam_d435i_depth, cam_nav_rgb (or 'all')",
 +        )
 +    )
++    ld.add_action(
++        DeclareLaunchArgument(
++            "broadcast_map_tf",
++            default_value="True",
++            choices=["True", "False"],
++            description="Publish a static map->odom (a fixed map frame for RViz). Set False "
++            "when AMCL or SLAM runs: they publish map->odom themselves.",
++        )
++    )
++    ld.add_action(
++        DeclareLaunchArgument(
++            "scene_xml",
++            default_value="",
++            description="MJCF scene (robot included) to load instead of the default scene; "
++            "ignored with use_robocasa:=true",
++        )
++    )
      ld.add_action(
          DeclareLaunchArgument(
              "use_robocasa", default_value="true", choices=["true", "false"]
-@@ -180,6 +188,7 @@ def generate_launch_description():
+@@ -180,6 +205,9 @@ def generate_launch_description():
              "mode": LaunchConfiguration("mode"),
              "use_mujoco_viewer": LaunchConfiguration("use_mujoco_viewer"),
              "use_cameras": LaunchConfiguration("use_cameras"),
 +            "cameras": LaunchConfiguration("cameras"),
++            "scene_xml": LaunchConfiguration("scene_xml"),
++            "broadcast_map_tf": LaunchConfiguration("broadcast_map_tf"),
              "use_robocasa": LaunchConfiguration("use_robocasa"),
              "robocasa_task": LaunchConfiguration("robocasa_task"),
              "robocasa_layout": (
@@ -230,19 +249,21 @@ index 628684f..f5dbc6f 100644
          loop_rate = self.node.create_rate(10)
          t_start = self.node.get_clock().now().seconds_nanoseconds()[0]
 diff --git a/stretch_simulation/stretch_mujoco_driver/stretch_mujoco_driver.py b/stretch_simulation/stretch_mujoco_driver/stretch_mujoco_driver.py
-index 47aa716..dd31ec7 100755
+index 47aa716..607ddc0 100755
 --- a/stretch_simulation/stretch_mujoco_driver/stretch_mujoco_driver.py
 +++ b/stretch_simulation/stretch_mujoco_driver/stretch_mujoco_driver.py
-@@ -88,6 +88,8 @@ class StretchMujocoDriver(Node):
+@@ -88,6 +88,10 @@ class StretchMujocoDriver(Node):
  
          super().__init__("stretch_mujoco_driver")
          self.declare_parameter("use_cameras", False)
 +        # Comma-separated StretchCameras names (e.g. "cam_d435i_rgb"), or "all". Each camera costs render time.
 +        self.declare_parameter("cameras", "all")
++        # Path to an MJCF scene (robot included) to load instead of stretch_mujoco's default scene
++        self.declare_parameter("scene_xml", "")
          self.declare_parameter("use_mujoco_viewer", True)
          self.declare_parameter("use_robocasa", True)
          self.declare_parameter("robocasa_task", DEFAULT_ROBOCASA_TASK)
-@@ -133,12 +135,19 @@ class StretchMujocoDriver(Node):
+@@ -133,12 +137,24 @@ class StretchMujocoDriver(Node):
                  style=robocasa_style,
              )
  
@@ -255,7 +276,12 @@ index 47aa716..dd31ec7 100755
 +            cameras_to_use = [StretchCameras[name.strip()] for name in cameras_param.split(",")]
 +        self.get_logger().info(f"cameras = {[c.name for c in cameras_to_use]}")
 +
++        scene_xml = str(self.get_parameter("scene_xml").value or "").strip()
++        if scene_xml and model is None:
++            self.get_logger().info(f"scene = {scene_xml}")
++
          sim = StretchMujocoSimulator(
++            scene_xml_path=scene_xml or None,
              model=model,
              camera_hz=10,
 -            cameras_to_use=(
@@ -265,3 +291,57 @@ index 47aa716..dd31ec7 100755
          )
  
          sim.start(headless=not use_mujoco_viewer)
+@@ -382,9 +398,12 @@ class StretchMujocoDriver(Node):
+             b.header.frame_id = self.base_frame_id
+             b.child_frame_id = "base_footprint"
+             self.tf_static_broadcaster.sendTransform(b)
+-            b.header.frame_id = "map"
+-            b.child_frame_id = self.odom_frame_id
+-            self.tf_static_broadcaster.sendTransform(b)
++            if self.broadcast_map_tf:
++                # A fixed map frame for RViz. Leave it off when AMCL or SLAM runs: they
++                # publish map->odom themselves (the real driver never publishes it).
++                b.header.frame_id = "map"
++                b.child_frame_id = self.odom_frame_id
++                self.tf_static_broadcaster.sendTransform(b)
+ 
+         # assign relevant arm status to variables
+         arm_status = robot_status.arm
+@@ -695,11 +714,9 @@ class StretchMujocoDriver(Node):
+         try:
+             lidar_data = sensor_status.get_data(StretchSensors.base_lidar)
+ 
+-            self.laser_scan_pub.publish(
+-                create_laser_scan_msg(
+-                    lidar_data, timestamp=current_time, frame_id="laser"
+-                )
+-            )
++            scan = create_laser_scan_msg(lidar_data, timestamp=current_time, frame_id="laser")
++            self.laser_scan_pub.publish(scan)
++            self.raw_scan_pub.publish(scan)
+         except ValueError:
+             ...  # Lidar is disabled, get_data() throws a ValueError
+ 
+@@ -1077,6 +1094,8 @@ class StretchMujocoDriver(Node):
+ 
+         self.declare_parameter("broadcast_odom_tf", False)
+         self.broadcast_odom_tf = self.get_parameter("broadcast_odom_tf").value
++        self.declare_parameter("broadcast_map_tf", True)
++        self.broadcast_map_tf = self.get_parameter("broadcast_map_tf").value
+         self.get_logger().info("broadcast_odom_tf = " + str(self.broadcast_odom_tf))
+         if self.broadcast_odom_tf:
+             self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+@@ -1152,6 +1171,13 @@ class StretchMujocoDriver(Node):
+             "/scan_filtered",
+             qos_profile=QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+         )
++        # The real robot has both: /scan from the lidar and /scan_filtered from a filter.
++        # Nav2's AMCL (parcs_stretch_nav2 configs) reads /scan.
++        self.raw_scan_pub = self.create_publisher(
++            LaserScan,
++            "/scan",
++            qos_profile=QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
++        )
+ 
+         self.camera_publishers = {
+             camera.name: self.create_publisher(
