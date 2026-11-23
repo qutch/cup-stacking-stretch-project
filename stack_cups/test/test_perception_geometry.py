@@ -177,3 +177,33 @@ def test_plan_reach_keeps_the_fingers_above_the_table():
 def test_plan_reach_refuses_unsafe_moves(cup, top, edge, reason):
     plan, why = P.plan_reach(np.array(cup), 0.04, top, edge, OFFS)
     assert plan is None and reason in why
+
+
+@pytest.mark.parametrize("deg", [-8.0, 0.0, 5.0])
+def test_table_edge_line_finds_the_angle_to_turn(deg):
+    # a table top 0.75 m up whose near edge (arm side, -y) is 0.5 m away and turned
+    # by `deg`; points are on the table top only, beyond the edge
+    rng = np.random.default_rng(2)
+    a = math.radians(deg)
+    u = rng.uniform(-0.6, 0.6, 6000)  # along the edge
+    v = rng.uniform(0.0, 0.4, 6000)  # into the table
+    # edge direction (cos a, sin a); "into the table" is the arm side, -y turned by a
+    x = u * math.cos(a) + v * math.sin(a)
+    y = u * math.sin(a) - v * math.cos(a) - 0.5 / math.cos(a)
+    pts = np.column_stack([x, y, np.full_like(x, 0.75)])
+    e = P.table_edge_line(pts)
+    assert e is not None
+    assert e["angle"] == pytest.approx(a, abs=math.radians(0.5))
+    assert e["distance"] == pytest.approx(0.5, abs=0.01)
+    assert e["top"] == pytest.approx(0.75, abs=0.005)
+
+
+def test_table_edge_line_ignores_the_arm_sticking_out():
+    rng = np.random.default_rng(3)
+    x, v = rng.uniform(-0.6, 0.6, 6000), rng.uniform(0.0, 0.4, 6000)
+    table = np.column_stack([x, -0.55 - v, np.full_like(x, 0.74)])
+    xa, ya = rng.uniform(-0.05, 0.03, 300), rng.uniform(-0.55, -0.24, 300)
+    arm = np.column_stack([xa, ya, np.full_like(xa, 0.735)])  # at table height
+    e = P.table_edge_line(np.vstack([table, arm]))
+    assert e is not None and abs(e["angle"]) < math.radians(0.5)
+    assert e["distance"] == pytest.approx(0.55, abs=0.01)

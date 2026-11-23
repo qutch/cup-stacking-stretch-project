@@ -126,10 +126,13 @@ ros2 launch stack_cups find_cup.launch.py config:=sim step_confirm:=true      # 
 ```
 
 `config:=` is `sim`, `robot`, or the path of a parameter file. `ros2 run stack_cups find_cup`
-also works and uses the sim values. In the task scene `find_cup` does not work yet: it goes
-for the biggest red blob the head camera sees, and once the raised arm hides that cup, the
-biggest blob is the next cup, so ALIGN chases a different cup after each drive and gives up
-(roadmap 1.1). Use `scene:=default` (one cup) until then.
+also works and uses the sim values. It exits when it is done: exit code 0 after `[DONE]`,
+1 after `[FAILED]` or `[STOPPED]` (with `show_windows:=true` it waits for Ctrl+C first).
+With `grasp:=true` it ends `[DONE] carrying the cup` in the task scene. It picks the
+closest loose cup, skips red cups inside the tape, splits cups that touch, and then keeps
+to the same cup (roadmap 1.1). Test scenes: `sim.launch.py cups:=single` (one cup),
+`cups:=touching` (two cups rim to rim), `cups:=mixed` (three loose, three placed in the
+tape), `cups:=pyramid` (all placed: find_cup fails with "all ... inside the tape").
 
 Main parameters. `grasp`, `steps`, `step_confirm` and `show_windows` can be given to
 `find_cup.launch.py` as `name:=value`; `ros2 run stack_cups find_cup --ros-args -p name:=value`
@@ -137,7 +140,7 @@ sets any parameter.
 
 | Parameter | Sim | Robot | Meaning |
 |---|---|---|---|
-| `steps` | `all` | `all` | Run only these steps: any of `aim_head,ready,align,reach` |
+| `steps` | `all` | `all` | Run only these steps: any of `aim_head,ready,align,reach,carry` (`carry` needs `grasp`) |
 | `grasp` | `false` | `false` | Close the gripper at the end |
 | `step_confirm` | `false` | `true` | Before each step, wait for Enter or `/stack_cups/continue` |
 | `show_windows` | `true` | `true` | Show the camera and red-mask debug windows |
@@ -245,12 +248,18 @@ the other joints take `move_to_pose` goals):
    node does not push past the target.
 
 In MuJoCo tests the cup is located within about 1 cm and the table within about 1 cm, and
-ALIGN lines the arm up with the cup within about 1 cm. Picking the cup up is not reliable
-yet: in 3 sim runs with `grasp:=true` (default scene) the cup was never lifted. One run
-stopped at the wrist check; in the other two the gripper closed without holding the cup.
-Opening the gripper wider (0.5, the earlier value, instead of 0.3) did not help: in 3 more
-runs the arm stopped 3.3 cm short of the cup and the gripper closed on nothing
-(roadmap 1.6-1.8).
+ALIGN lines the arm up with the cup within about 1 cm. With `grasp:=true` the gripper
+closes until the fingers stop on the cup and squeezes `gripper_squeeze` past that
+(roadmap 1.7); then the lift rises `grasp_check_lift` (8 cm) and the run fails unless the
+fingers stay where they were (roadmap 1.8). A 20 g task-scene cup was lifted and carried
+(it moved 28 cm with the arm when it retracted). A reach that is blocked short of the cup
+is a failure, not `[DONE]`.
+
+Two things that looked like grasp problems were not: the raised gripper hid the cup from
+the head camera on the 74 cm task table (fixed: `ready_above_cup` 0.05 m instead of
+0.25), and stretch_mujoco's default scene object is a 500 g solid cylinder (a real cup
+is ~10 g), which slips out. Lift checks shorter than the grasp point's distance to the
+cup's top passed even when the cup stayed behind, because the fingers slid up it.
 
 ## The task scene
 
@@ -287,10 +296,20 @@ ros2 launch stack_cups sim_nav.launch.py     # the starter's Nav2, set up for th
 python3 sim/nav_check.py                     # stows the arm, then drives to 3 goals
 ```
 
-In the sim, Nav2 reached all three goals: the stacking area (13 s), the far side of the
-table (60 s, around the table), and back to the start (95 s). By the sim's true pose the
-robot ended 24-34 cm and at most 10° from each goal: Nav2 stops within 25 cm of where AMCL
-thinks it is, and AMCL was 13-18 cm off. Getting closer is ALIGN's job (roadmap 1.3b).
+In the sim, Nav2 reached all three goals: the stacking area (10 s), the far side of the
+table (50 s, around the table), and back to the start (72 s). By the sim's true pose the
+robot ended 23-32 cm and at most 6° from each goal: Nav2 stops within 25 cm of where AMCL
+thinks it is, and AMCL was 7-18 cm off. Getting closer is find_cup's SQUARE step (roadmap
+1.3b). `sim_nav.launch.py` caps Nav2 at 0.1 m/s and 0.25 rad/s in the sim: the sim stamps
+its lidar scans with wall time when they are sent, and at the starter's speeds (0.26 m/s,
+1 rad/s), now that the sim base really follows them, AMCL ended 1-2.5 m off.
+
+Pick a cup after driving there with Nav2 (Nav2 running):
+
+```bash
+ros2 run stack_cups find_cup --ros-args --params-file $(ros2 pkg prefix --share stack_cups)/config/sim.yaml \
+  -p grasp:=true -p navigate:=true -p nav_goal_x:=0.2 -p nav_goal_y:=0.0 -p nav_goal_yaw:=0.0
+```
 
 Use `sim_nav.launch.py` in the sim, not the starter's `navigation.launch.py use_sim_time:=true`:
 
@@ -299,11 +318,10 @@ Use `sim_nav.launch.py` in the sim, not the starter's `navigation.launch.py use_
   robot's driver and lidar.
 - The starter's remap of Nav2's `/cmd_vel` to the driver's `/stretch/cmd_vel` is commented
   out, so the base never moves. Check this on the real robot too.
-- The sim's base reaches only about a quarter of the commanded speed (its wheel actuators
-  have gear 3, which the sim driver's wheel-speed math leaves out, plus heavy friction; top
-  speed about 0.09 m/s). `sim_nav.launch.py` gives Nav2's progress check 30 s instead of
-  10 s and keeps it from commanding crawl speeds. `find_cup` is not affected: it steers its
-  base moves by odometry.
+- The sim's base used to reach only about a quarter of the commanded speed (a wheel gear
+  the sim driver left out; fixed in `stretch_mujoco.patch`). `sim_nav.launch.py` still
+  gives Nav2's progress check 30 s instead of 10 s and keeps it from commanding crawl
+  speeds; with the fix that may no longer be needed (roadmap 1.3).
 - It uses the starter's `nav2_params.yaml`. The starter's default, `nav2_voxel_params.yaml`,
   needs the spatio-temporal voxel layer plugin
   (`sudo apt install ros-humble-spatio-temporal-voxel-layer`).
@@ -364,10 +382,11 @@ Rebuild `stretch_simulation` and `parcs_stretch_nav2` after either. They were ma
 | Rendering a camera frame held the physics lock, so frames slower than the camera rate (30 Hz) stalled physics | Hold the lock only while copying the scene; render outside it | task scene: 0.55× → 1.0× real time; slow frames now lower the camera rate instead |
 | The ROS side and the sim process both edit the shared command record, without a common lock | Share one lock | lost commands: 1 in 60 → 0 in 100 |
 | "Move the base 0 m" (sent for 1 s after `cmd_vel` stops) drove the base backward | Treat it as a stop | no more backward creep |
+| The wheel actuators have gear 3, but the wheel speed was sent as the control without it, and `ctrlrange` ±6 capped the base at ~0.09 m/s | Multiply by the gear and widen `ctrlrange` to fit | 4 s at 0.15 m/s: 0.039 → 0.134 m/s (0.30: 0.087 → 0.274, the rest is spin-up) |
 
-Not fixed: the base follows `cmd_vel` at only about a quarter of the commanded speed (see
-[Navigation in the sim](#navigation-in-the-sim)). Fixing it changes how fast `find_cup`'s
-base moves go, so its sim parameters would need re-tuning.
+With the base at full speed, `find_cup`'s sim drives use `v_max` 0.3 and `decel` 0.2
+(were 0.15 and 0.1): a search plus pick-up 1.2 m away took 73.5 s before the fix, 48 s
+after it, 40 s with the new speeds; ALIGN still lines up within 0.5 cm.
 
 **`stretch_ros2.patch`** (the ROS driver):
 
@@ -492,38 +511,85 @@ which also sizes the sim's cups).
 
 **Owner:** Hutch
 
-- [ ] **1.1 Detect loose cups** (partial: red detection works)
-  - Make the red thresholds parameters and tune them for real lighting.
-  - Ignore red cups inside the taped area (already placed).
-  - Use depth to separate cups that touch.
-  - Pick the closest loose cup, not the biggest red blob.
-  - Keep tracking the same cup through ALIGN (the one nearest its last position): in the
-    task scene the raised arm hides the target and the next cup becomes the biggest blob.
-- [ ] **1.2 Search when no cup is in view**: pan the head, or turn and drive.
-- [ ] **1.3 Drive to the cup's general area** (partial: Nav2 from the starter package)
-  - Save a pose near the cup table in the map frame and drive there with
-    `BasicNavigator.goToPose`, with the arm side facing the table.
-  - Stow the arm first (the starter recommends it, and Nav2's footprint assumes it).
-  - `sim/cup_approach.py` is no longer needed for this; keep it only as a standalone
-    sim test.
-- [ ] **1.3b Hand off from Nav2 to ALIGN**
-  - Nav2 stops within 25 cm and 0.25 rad (about 14°) of the goal
-    (`xy_goal_tolerance`, `yaw_goal_tolerance`), so the camera has to finish the job.
-  - ALIGN only drives forward and back; add a step that turns the robot square to the
-    table edge (seen in depth) before aligning.
-  - Switch the driver from navigation mode to position mode for arm moves, and back.
+- [x] **1.1 Detect loose cups** (`perception.find_cups` / `choose_cup`)
+  - [x] Red thresholds are parameters (`red_hue_width`, `red_sat_min`, `red_val_min`,
+    `red_min_area`).
+  - [ ] Tune them, and the `tape_*` colour, on the robot in the lab's light
+    (`show_windows` shows the mask).
+  - [x] Ignore red cups inside the taped area: the tape's points form a polygon on the
+    table; cups whose center is inside are placed (`ignore_taped`).
+  - [x] Separate touching cups by depth: split a blob where its front surface bulges back
+    between two cups (`split_min_rise`). Flat red points (table depth at blob edges) are
+    not cups. Limit: a cup hidden straight behind another is not separated.
+  - [x] Pick the closest loose cup, not the biggest red blob.
+  - [x] Keep the target: the raised gripper hid it on the 74 cm table (`ready_above_cup`
+    0.25 -> 0.05 m), and after the first measurement each attempt keeps the cup nearest
+    its last position in odom (`track_radius`), so another cup cannot take its place.
+- [x] **1.2 Search when no cup is in view** (SEARCH, in READY): turn the head
+      (`search_pan_step` x `search_pan_steps` each way, then tilted up by
+      `search_tilt_up`), then drive along the heading in `search_drive_step` stops up to
+      `search_drive_max` each way (blind: robot.yaml allows only 0.4 m). A cup found off
+      to the side is driven beside the arm. Sim: a cup 1.2 m ahead is found by the head
+      and carried; with the head search off, the drive search finds it.
+- [x] **1.3 Drive to the cup's general area** (the `navigate` step, with `navigate:=true`):
+      stow the arm (Nav2's footprint assumes it), then `BasicNavigator.goToPose` to
+      `nav_goal_x/y/yaw` (map frame, arm side facing the table). Nav2 must be running
+      (sim: `ros2 launch stack_cups sim_nav.launch.py`). With `nav_set_initial_pose` AMCL
+      is first given `nav_init_x/y/yaw` (sim only; on the robot set it in RViz). Our
+      cmd_vel stream pauses while Nav2 drives.
+  - [ ] On the robot: save the goal pose near the cup table in the real map.
+- [x] **1.3b Hand off from Nav2 to ALIGN** (the `square` step, `square_up`)
+  - [x] Nav2 stops within 25 cm and 0.25 rad of its goal. SQUARE fits the table's near
+    edge in depth (`perception.table_edge_line`) and turns in place (`turn_by`, odometry)
+    until the base is parallel to it; if the edge is more than `edge_tol` from
+    `edge_distance` (0.55 m), it turns to face the table, drives the difference, turns
+    back and squares up again.
+  - [x] Driver modes: position mode for arm and head moves, navigation mode for base
+    moves, switched as needed (`switch_modes`).
+  - Sim: started 1 m back and turned 60 deg, Nav2 to the near side (14 s), the edge was
+    9.7 cm too far and 0.5 deg off; after SQUARE 0.554 m and +0.2 deg; then DONE carrying
+    the cup (77.6 s in all).
+  - [ ] Open: from the far side (Nav2 there in 83 s, squared from +13 deg) the one cup
+    there stands 19 cm in from the edge, and the first reach knocked it over (it then
+    measured 9.3 cm tall); the retries chased it out of reach. Needs a look at deep cups.
 - [x] **1.4 Center the cup and line it up with the arm** (about ±1 cm; slow in the sim)
 - [x] **1.5 Measure the cup and table, check the reach is safe**
-  - [ ] Add a cup height measurement as a cross-check against the parameters.
-- [ ] **1.6 Move the gripper to the cup** (partial: works)
-  - Grasp at a set height on the cup (from parameters), not the cup's center.
-- [ ] **1.7 Close the gripper by effort** (partial: closes to a fixed position)
-  - Hold firmly without crushing real cups.
-- [ ] **1.8 Check the grasp worked**: gripper position/effort, or the cup is gone from
-      the table.
-- [ ] **1.9 Lift and retract into the carry pose**: clear the table, arm in, wrist
-      tucked, cup upright.
-- [ ] **1.10 Retry on a failed grasp**: open, back off, repeat ALIGN and REACH.
+  - [x] Cup height cross-check: the cup's highest red point above the table top, against
+    `cup_height`; off by more than `cup_height_tol` (3 cm) warns, or fails with
+    `cup_height_strict`. Sim: task cup 12.3 cm (12.0), default-scene cylinder 8.1 cm (8).
+- [x] **1.6 Move the gripper to the cup**
+  - [x] Grasp at a set height: `grasp_height` (0.06 m) above the measured table top. The
+    measured center sat ~2.5 cm high (the camera sees the cup's top and inside more).
+  - [x] Open only as wide as the cup needs before reaching (measured width +
+    `grasp_open_margin` each side, at most `gripper_open`; `gripper_fit_*` maps a width
+    to a finger position). The default scene's run C was blocked 3 cm short: with the
+    fingers 14 cm apart and the wrist turned, a finger hit the box 6 cm from the red
+    cylinder. Now it opens to +0.13 there and reaches; task cups still get +0.3.
+  - [ ] On the robot: fit `gripper_fit_per_m` / `gripper_fit_offset` (robot finger units
+    differ; 0 keeps `gripper_open`) and set `grasp_height` from the real cups.
+- [ ] **1.7 Close the gripper by effort** (partial: closes until the fingers stop on the
+      cup, then squeezes `gripper_squeeze` past that; holds a 20 g sim cup)
+  - On the robot: set `gripper_max_effort` from the effort `joint_states` reports while
+    holding a cup, and tune `gripper_squeeze` so real cups are not crushed (the sim
+    reports no gripper effort).
+- [x] **1.8 Check the grasp worked**: the fingers must stop on something, then stay put
+      while the lift rises `grasp_check_lift` (more than the grasp point's distance to
+      the cup's top). A reach blocked short of the cup fails too.
+- [x] **1.9 Lift and retract into the carry pose** (the `carry` step): the lift rises
+      until the cup's bottom is `carry_clearance` above the table, the arm pulls all the
+      way in, the wrist stays level so the cup stays upright, and the run fails if the
+      fingers close further on the way (the cup dropped).
+  - [ ] Tuck the wrist (`carry_wrist_yaw`, 0 = straight for now): the cup then sits about
+    0.4 m from the base center, outside Nav2's 0.22 m `robot_radius` (see 2.4). Grasp
+    point vs yaw at the carry pose (sim, no cup): 0 -> 0.415 m, 1.57 -> 0.287 m, 2.2 ->
+    0.197 m, 2.8 -> 0.129 m; 3.12 is blocked by the robot. With a cup in hand, yaw 2.0,
+    2.2 and 2.5 each lost or jammed the cup during the tuck (fingers pushed open or
+    closing on nothing), likely the cup hitting the arm or lift carriage it hangs next
+    to. Next: see what it hits in the viewer, or carry straight and give Nav2 a larger
+    footprint while carrying.
+- [x] **1.10 Retry on a failed grasp**: a blocked reach, closing on nothing, a slip in
+      the grasp check or a drop while carrying opens the gripper, pulls the arm in and
+      repeats READY, ALIGN, REACH and CARRY, up to `grasp_tries` (3) attempts.
 
 ### 2. Drive to the stacking area with the cup
 

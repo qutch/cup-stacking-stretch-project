@@ -18,6 +18,8 @@
     joint_tries: 1            # the real driver reaches its targets: no re-commanding
     aborted_ok_tol: 0.0       # an aborted move is a failure
     max_base_speed: 0.1       # m/s, hard cap while testing
+    max_turn_rate: 0.3        # rad/s, hard cap while testing
+    switch_modes: true
     max_joint_speed_m: 0.05   # m/s for lift and arm (verify on the robot)
     max_joint_speed_rad: 0.3  # rad/s for head and wrist (verify on the robot)
     step_confirm: true        # confirm each step: Enter, or publish /stack_cups/continue
@@ -30,8 +32,51 @@
     grasp: false              # turn on once reaching is trusted
     show_windows: true
     gripper_open: 0.3         # verify on the robot: real finger units differ from the sim's
-    gripper_closed: -0.1      # verify on the robot (roadmap 1.7: close by effort instead)
-    ready_above_cup: 0.25
+    gripper_closed: -0.1      # verify on the robot: how far closing may go
+    gripper_fit_per_m: 0.0       # robot finger units differ: fit them, then set
+    gripper_fit_offset: -0.284
+    grasp_open_margin: 0.015
+    gripper_squeeze: 0.05     # verify on the robot (finger units)
+    gripper_max_effort: 0.0   # verify: set from joint_states effort when gripping a cup
+    grasp_check_lift: 0.08      # > grasp point to cup top
+    grasp_slip_tol: 0.01
+    carry_clearance: 0.05
+    carry_wrist_yaw: 0.0       # straight: see params.py
+    grasp_tries: 3
+    red_hue_width: 10        # tune for the lab lighting
+    red_sat_min: 120
+    red_val_min: 70
+    red_min_area: 100
+    ignore_taped: true
+    tape_hue_min: 95         # blue tape; check the real tape colour
+    tape_hue_max: 130
+    tape_sat_min: 120
+    tape_val_min: 60
+    track_radius: 0.08
+    split_min_rise: 0.015
+    navigate: false
+    nav_goal_x: 0.0               # set: a pose near the cup table in your map
+    nav_goal_y: 0.0
+    nav_goal_yaw: 0.0
+    nav_set_initial_pose: false     # set the initial pose in RViz
+    nav_init_x: 0.0
+    nav_init_y: 0.0
+    nav_init_yaw: 0.0
+    nav_timeout: 120.0
+    square_up: true
+    square_tol: 0.01
+    square_tries: 3
+    edge_distance: 0.55       # verify: arm reach to the cups from here
+    edge_tol: 0.03
+    w_max: 0.2
+    w_min: 0.05                    # verify: slowest turn that still turns
+    search_pan_step: 0.6
+    search_pan_steps: 2
+    search_tilt_up: 0.3
+    search_drive_step: 0.4
+    search_drive_max: 0.4      # blind drive: verify the path is clear
+    search_samples: 3
+    ready_above_cup: 0.05     # higher hides the cup from the head camera
     v_max: 0.05
     v_min: 0.01               # verify on the robot: slowest command that still moves the base
     decel: 0.05
@@ -42,7 +87,9 @@
     sample_dt: 0.07
     samples: 5
     max_spread: 0.01
-    grasp_height: -1.0
+    cup_height_tol: 0.03
+    cup_height_strict: false
+    grasp_height: 0.06        # verify: half the real cup's height
     use_wrist_yaw: true
     max_yaw: 0.25
     arm_len: 0.270            # verify on the robot (sim/check_robot_layer.py measures it)

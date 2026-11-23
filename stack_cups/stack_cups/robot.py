@@ -69,6 +69,11 @@ RUNSTOP_TOPIC = "/is_runstopped"
 # applies velocity 0.
 CMD_VEL_HZ = 10.0
 DRIVE_HZ = 20.0
+# drive_by holds the starting heading: turn rate = -HEADING_GAIN * heading error, at most
+# HEADING_MAX_W. Without it the sim base turned up to 3.5 deg in a 0.4 m drive at
+# 0.3 m/s, which moves a cup 0.55 m to the side by ~3 cm along the arm line.
+HEADING_GAIN = 2.0  # (rad/s) per rad
+HEADING_MAX_W = 0.2  # rad/s
 # Safety net if the clock stops (e.g. the sim froze): a wait gives up once the ROS clock
 # has not moved for this much wall time. (Not a cap on total wall time: the sim can run
 # at under 1% of real time, so a long move legitimately takes many wall minutes.)
@@ -89,12 +94,34 @@ class StopRequested(RuntimeError):
     """Someone asked the robot to stop (stop topic, runstop button or Ctrl+C)."""
 
 
+def _cancel(handle):
+    """Cancel an accepted goal; never raises (ROS may already be shutting down)."""
+    try:
+        handle.cancel_goal_async()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cancel_when_accepted(future):
+    """Cancel the goal of a pending send_goal future as soon as it is accepted."""
+    def done(f):
+        try:
+            handle = f.result()
+        except Exception:  # noqa: BLE001 - the send itself failed: nothing to cancel
+            return
+        if handle is not None and handle.accepted:
+            _cancel(handle)
+    future.add_done_callback(done)
+
+
 class CupRobot(hm.HelloNode):
     def __init__(self):
         # HelloNode creates the actual ROS node in main(); see start()
         hm.HelloNode.__init__(self)
         self.cmd_v = 0.0
-        self.nav_active = False
+        self.cmd_w = 0.0  # rad/s, only drive_by's heading hold turns the base
+        self.nav_active = False  # True: we stream cmd_vel (navigation mode, our base moves)
+        self.driver_mode = None  # the mode we last switched the driver to
         self._odom = None
         self.odom_count = 0
         self.warned_abort = False
@@ -285,6 +312,8 @@ class CupRobot(hm.HelloNode):
         With joint speed limits, gripper joints move in a goal of their own: HelloNode
         gives every joint without a speed 0.0 once one joint in a goal has one."""
         self.check_stop()
+        if self.rcfg["switch_modes"]:
+            self.set_driver_mode("position")
         limited = self._speed_limited(pose) is not pose
         grip = {j: x for j, x in pose.items() if j in GRIPPER_JOINTS}
         if limited and grip and len(grip) < len(pose):
@@ -297,17 +326,24 @@ class CupRobot(hm.HelloNode):
             raise RuntimeError(f"invalid move (see the move_to_pose error above): {pose}")
         try:
             handle = self.wait_future(future, timeout)
-        except StopRequested:
+        except BaseException:
             # stopped before the goal was even accepted: cancel it as soon as it is
-            future.add_done_callback(
-                lambda f: f.result().cancel_goal_async() if f.result() and f.result().accepted
-                else None)
+            _cancel_when_accepted(future)
             raise
-        if handle is None or not handle.accepted:
-            raise RuntimeError(f"move rejected or not answered in {timeout:.0f} s: {pose}")
+        if handle is None:
+            # not answered in time, but it may still be accepted later: don't let it run
+            _cancel_when_accepted(future)
+            raise RuntimeError(f"move not answered in {timeout:.0f} s: {pose}")
+        if not handle.accepted:
+            raise RuntimeError(f"move rejected: {pose}")
         self._goal = handle
         try:
             result = self.wait_future(handle.get_result_async(), timeout)
+            if result is None:
+                _cancel(handle)  # timed out: stop the joints instead of leaving them moving
+        except BaseException:
+            _cancel(handle)
+            raise
         finally:
             self._goal = None
         if result is None:
@@ -373,6 +409,47 @@ class CupRobot(hm.HelloNode):
             return float(js.position[js.name.index(name)])
         return None
 
+    def joint_effort(self, name):
+        """The joint's effort from joint_states, or None if not reported (the sim reports
+        none for the gripper: all zeros count as not reported)."""
+        js = self.joint_state
+        if name in js.name and len(js.effort) == len(js.name):
+            e = float(js.effort[js.name.index(name)])
+            return e if e != 0.0 else None
+        return None
+
+    def close_gripper(self, closed, squeeze, max_effort=0.0, step=0.05, stall_tol=0.01):
+        """Close the gripper until it touches something, then squeeze a little (roadmap 1.7).
+
+        Closes in `step`s toward `closed` (finger units). Contact is when the fingers stop
+        `stall_tol` short of a step's command, or the effort exceeds `max_effort` (> 0;
+        only where joint_states reports effort, i.e. not in the sim). Then holds at the
+        contact position minus `squeeze`, so the grip force is set by `squeeze`, not by
+        how far `closed` is past the object. Returns (finger position, contact)."""
+        joint = "joint_gripper_finger_left"
+        pos = self.joint_pos(joint)
+        if pos is None:
+            raise RuntimeError(f"no {joint} in joint_states")
+        cmd = pos
+        while cmd > closed:
+            cmd = max(cmd - step, closed)
+            try:
+                self.move({joint: cmd})
+            except JointBlocked:
+                pass  # the fingers stopped on something: that is what we look for below
+            pos = self.wait_joint_still(joint) or self.joint_pos(joint)
+            effort = self.joint_effort(joint)
+            if pos - cmd > stall_tol or (max_effort > 0.0 and effort is not None
+                                         and abs(effort) > max_effort):
+                hold = max(pos - squeeze, closed)
+                self.move({joint: hold})
+                self.get_logger().info(
+                    f"gripper touched something at {pos:+.3f} (commanded {cmd:+.3f}, effort "
+                    f"{'n/a' if effort is None else f'{effort:.1f}'}); holding at {hold:+.3f}")
+                return self.wait_joint_still(joint) or self.joint_pos(joint), True
+        self.get_logger().info(f"gripper closed to {pos:+.3f} without touching anything")
+        return pos, False
+
     def wait_joint_still(self, name, still_m=0.001, window_s=0.2, timeout=3.0):
         """Wait until the joint moved less than `still_m` over `window_s` (ROS time);
         returns its position."""
@@ -395,8 +472,9 @@ class CupRobot(hm.HelloNode):
         The unpatched sim reports success once a joint is within 5 cm, so re-command with
         the remaining error added until it is within `tol` (at most `tries` moves,
         default the joint_tries parameter), then send the true target so it does not
-        creep past. If something blocks the joint (JointBlocked), stop correcting:
-        commanding past the target would only shove what is in the way."""
+        creep past. If something blocks the joint, stop correcting (commanding past the
+        target would only shove what is in the way) and raise JointBlocked. Raises
+        RuntimeError if the joint is still off after all tries."""
         tries = int(tries or self.rcfg["joint_tries"])
         cmd = target
         for _ in range(tries):
@@ -417,16 +495,16 @@ class CupRobot(hm.HelloNode):
                     self.move({joint: target})
                 return
             if blocked is not None:
-                self.get_logger().warn(f"{joint} is blocked {err * 100:+.1f} cm short of "
-                                       f"{target:.3f}; not pushing harder ({blocked})")
                 if cmd != target:
                     try:
                         self.move({joint: target})
                     except JointBlocked:
                         pass  # still blocked; it now pushes only toward the true target
-                return
+                raise JointBlocked(f"{joint} blocked {err * 100:+.1f} cm short of "
+                                   f"{target:.3f} (something is in the way): {blocked}")
             cmd += err
-        self.get_logger().warn(f"{joint} did not get within {tol * 100:.0f} cm of {target:.3f}")
+        raise RuntimeError(f"{joint} did not get within {tol * 100:.1f} cm of {target:.3f} "
+                           f"in {tries} moves (last {err * 100:+.1f} cm off)")
 
     # ----------------------------------------------------------------------- TF
     def lookup(self, target, source):
@@ -460,11 +538,35 @@ class CupRobot(hm.HelloNode):
 
     # --------------------------------------------------------------------- base
     def enter_navigation_mode(self):
-        """Navigation mode: the base takes cmd_vel, every other joint still takes
-        move_to_pose goals (HelloNode logs a 'position mode' warning for each one)."""
-        self.switch_to_navigation_mode()
-        self.cmd_v = 0.0
-        self.nav_active = True
+        """Navigation mode: the base takes cmd_vel (streamed by us). Every other joint
+        still takes move_to_pose goals; with switch_modes, move() switches to position
+        mode for them and the next base move switches back (roadmap 1.3b)."""
+        self.set_driver_mode("navigation")
+
+    def set_driver_mode(self, mode):
+        """'navigation' (we stream cmd_vel), 'position' (arm and head moves), or 'nav2'
+        (navigation mode, but we stop streaming so Nav2's cmd_vel is the only one)."""
+        if mode == self.driver_mode:
+            return
+        with self._pub_lock:
+            self.cmd_v = self.cmd_w = 0.0
+            if self.nav_active:
+                self._publish_cmd()  # a last zero before we stop streaming
+            self.nav_active = False
+        if mode == "position":
+            self.switch_to_position_mode()
+        else:
+            self.switch_to_navigation_mode()
+        self.driver_mode = mode
+        self.nav_active = mode == "navigation"
+
+    def _base_mode(self):
+        """Make sure our base commands reach the driver (navigation mode)."""
+        if not self.nav_active:
+            if self.rcfg["switch_modes"] or self.driver_mode is None:
+                self.set_driver_mode("navigation")
+            else:
+                raise RuntimeError("base moves need navigation mode")
 
     def _on_odom(self, msg):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
@@ -478,6 +580,7 @@ class CupRobot(hm.HelloNode):
     def _publish_cmd(self):
         msg = Twist()
         msg.linear.x = float(self.cmd_v)
+        msg.angular.z = float(self.cmd_w)
         self.cmd_vel_pub.publish(msg)
 
     def _stream_loop(self):
@@ -491,28 +594,66 @@ class CupRobot(hm.HelloNode):
                     return
             time.sleep(1.0 / CMD_VEL_HZ)
 
-    def drive(self, v):
-        """Set the base speed, capped at max_base_speed; the stream thread keeps re-sending
-        it to the driver. Speed 0 is always allowed; any other speed raises StopRequested
-        after a stop."""
-        if v != 0.0:
+    def drive(self, v, w=0.0):
+        """Set the base speed (capped at max_base_speed) and turn rate w (rad/s, capped at
+        max_turn_rate); the stream thread keeps re-sending them to the driver. drive(0.0)
+        (stop) is always allowed; anything else raises StopRequested after a stop."""
+        if v != 0.0 or w != 0.0:
             self.check_stop()
+            self._base_mode()
         cap = float(self.rcfg["max_base_speed"])
         with self._pub_lock:
             self.cmd_v = float(np.clip(v, -cap, cap))
+            wcap = float(self.rcfg["max_turn_rate"])
+            self.cmd_w = float(np.clip(w, -wcap, wcap))
             self._publish_cmd()
 
-    def drive_by(self, distance, *, v_max, v_min, decel, tol=0.003, stall_s=2.0,
-                 timeout_s=30.0, max_reversals=3):
-        """Drive `distance` meters along the current heading, steered by /odom.
-        Returns the progress reached; raises RuntimeError on a stall or timeout
-        (both in ROS time). The command is always left at 0, even on an exception,
-        a stop request or Ctrl+C."""
-        if not self.nav_active:
-            raise RuntimeError("drive_by needs navigation mode")
+    def turn_by(self, angle, *, w_max=0.3, w_min=0.08, decel=0.5, tol=0.005,
+                stall_s=2.0, timeout_s=30.0):
+        """Turn the base in place by `angle` rad (+ = counterclockwise), steered by the
+        odometry yaw (roadmap 1.3b). Returns the angle turned; raises on a stall or a
+        timeout. The command is always left at 0."""
+        self._base_mode()
         start = self.odom_pose()
         if start is None:
             raise RuntimeError(f"no odometry on {self.odom_topic}")
+        t0 = stall_t = self.now()
+        turned = stall_ref = 0.0
+        try:
+            while rclpy.ok():
+                now = self.now()
+                yaw = self.odom_pose()[2]
+                turned = float(np.arctan2(np.sin(yaw - start[2]), np.cos(yaw - start[2])))
+                w = motion.base_speed(angle - turned, w_max, w_min, decel, tol)
+                if w == 0.0:
+                    break
+                if abs(turned - stall_ref) > 0.002:
+                    stall_ref, stall_t = turned, now
+                elif now - stall_t > stall_s:
+                    raise RuntimeError(f"base stalled turning at {turned:+.3f} of "
+                                       f"{angle:+.3f} rad")
+                if now - t0 > timeout_s:
+                    raise RuntimeError(f"turn_by timed out at {turned:+.3f} of {angle:+.3f} rad")
+                self.drive(0.0, w)
+                self._idle(1.0 / DRIVE_HZ)
+        finally:
+            self.drive(0.0)
+        return turned
+
+    def drive_by(self, distance, *, v_max, v_min, decel, tol=0.003, stall_s=2.0,
+                 timeout_s=None, max_reversals=3):
+        """Drive `distance` meters along the current heading, steered by /odom, turning
+        back to the starting heading as it goes (HEADING_GAIN).
+        Returns the progress reached; raises RuntimeError on a stall or timeout
+        (both in ROS time). The default timeout is 30 s plus twice the time the distance
+        takes at v_min, so long drives (SEARCH) do not time out at low speeds. The
+        command is always left at 0, even on an exception, a stop request or Ctrl+C."""
+        self._base_mode()
+        start = self.odom_pose()
+        if start is None:
+            raise RuntimeError(f"no odometry on {self.odom_topic}")
+        if timeout_s is None:
+            timeout_s = 30.0 + 2.0 * abs(distance) / max(v_min, 0.01)
         t0 = stall_t = self.now()
         progress = stall_ref = 0.0
         last_sign, reversals = 0.0, 0
@@ -544,7 +685,10 @@ class CupRobot(hm.HelloNode):
                 if self.clock_stalled():
                     raise RuntimeError(f"the ROS clock stopped for {CLOCK_STALL_S:.0f} s "
                                        f"during drive_by (did the sim freeze?)")
-                self.drive(v)
+                yaw_err = float(np.arctan2(np.sin(self.odom_pose()[2] - start[2]),
+                                           np.cos(self.odom_pose()[2] - start[2])))
+                w = float(np.clip(-HEADING_GAIN * yaw_err, -HEADING_MAX_W, HEADING_MAX_W))
+                self.drive(v, w)
                 self._idle(1.0 / DRIVE_HZ)
         finally:
             self.drive(0.0)

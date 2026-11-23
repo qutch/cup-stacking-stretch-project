@@ -19,6 +19,8 @@
     joint_tries: 5            # sim only: the unpatched sim accepts a joint within 5 cm
     aborted_ok_tol: 0.05      # sim only: the unpatched sim aborts every goal, no message
     max_base_speed: 0.3
+    max_turn_rate: 0.5
+    switch_modes: true
     max_joint_speed_m: 0.0    # the sim ignores joint speeds
     max_joint_speed_rad: 0.0
     step_confirm: false
@@ -32,10 +34,53 @@
     show_windows: true
     gripper_open: 0.3         # fingertips ~12 cm apart: clears a 9.5 cm rim
     gripper_closed: -0.1
-    ready_above_cup: 0.25
-    v_max: 0.15
-    v_min: 0.06               # sim only: the sim's wheel friction stalls slower commands
-    decel: 0.1
+    gripper_fit_per_m: 6.24
+    gripper_fit_offset: -0.284
+    grasp_open_margin: 0.015
+    gripper_squeeze: 0.05
+    gripper_max_effort: 0.0   # the sim reports no gripper effort
+    grasp_check_lift: 0.08      # > grasp point to cup top
+    grasp_slip_tol: 0.01
+    carry_clearance: 0.05
+    carry_wrist_yaw: 0.0       # straight: see params.py
+    grasp_tries: 3
+    red_hue_width: 10
+    red_sat_min: 120
+    red_val_min: 70
+    red_min_area: 100
+    ignore_taped: true
+    tape_hue_min: 95         # the sim tape is blue
+    tape_hue_max: 130
+    tape_sat_min: 120
+    tape_val_min: 60
+    track_radius: 0.08
+    split_min_rise: 0.015
+    navigate: false
+    nav_goal_x: 0.0
+    nav_goal_y: 0.0
+    nav_goal_yaw: 0.0
+    nav_set_initial_pose: true
+    nav_init_x: 0.0
+    nav_init_y: 0.0
+    nav_init_yaw: 0.0
+    nav_timeout: 120.0
+    square_up: true
+    square_tol: 0.01
+    square_tries: 3
+    edge_distance: 0.55
+    edge_tol: 0.03
+    w_max: 0.3
+    w_min: 0.08
+    search_pan_step: 0.6
+    search_pan_steps: 2
+    search_tilt_up: 0.3
+    search_drive_step: 0.4
+    search_drive_max: 1.2
+    search_samples: 3
+    ready_above_cup: 0.05     # higher hides the cup from the head camera
+    v_max: 0.3
+    v_min: 0.06               # sim: worked before the wheel gear fix; lower is untested
+    decel: 0.2
     drive_tol: 0.003
     align_tol: 0.008
     max_drives: 3
@@ -43,7 +88,9 @@
     sample_dt: 0.1            # sim only: one sim render
     samples: 5
     max_spread: 0.01
-    grasp_height: -1.0
+    cup_height_tol: 0.03
+    cup_height_strict: false
+    grasp_height: 0.06
     use_wrist_yaw: true
     max_yaw: 0.25
     arm_len: 0.270
