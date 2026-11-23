@@ -1,0 +1,50 @@
+# stack_cups parameters for the real Stretch (roadmap 0.2). Slow and step-by-step on
+# purpose until each value has been checked on the robot (roadmap 0.6).
+#   ros2 launch stack_cups find_cup.launch.py config:=robot
+# Values marked "verify on the robot" are estimates; measure them with the sim/ check
+# scripts on the robot (README: "First runs on the real robot") and update this file.
+/**:
+  ros__parameters:
+    # ---------------------------------------------------------------- cups
+    # Placeholder until the real cups are measured (roadmap open item).
+    cup_height: 0.12
+    cup_rim_diameter: 0.095
+    cup_base_diameter: 0.06
+    cup_wall: 0.003
+    cup_mass: 0.02
+
+    # ---------------------------------------------------------------- robot layer
+    odom_topic: /odom
+    joint_tries: 1            # the real driver reaches its targets: no re-commanding
+    aborted_ok_tol: 0.0       # an aborted move is a failure
+    max_base_speed: 0.1       # m/s, hard cap while testing
+    max_joint_speed_m: 0.05   # m/s for lift and arm (verify on the robot)
+    max_joint_speed_rad: 0.3  # rad/s for head and wrist (verify on the robot)
+    step_confirm: true        # confirm each step: Enter, or publish /stack_cups/continue
+
+    # ---------------------------------------------------------------- find_cup
+    steps: all
+    aim_head: true
+    head_pan: -1.57
+    head_tilt: -0.6
+    grasp: false              # turn on once reaching is trusted
+    show_windows: true
+    gripper_open: 0.3         # verify on the robot: real finger units differ from the sim's
+    gripper_closed: -0.1      # verify on the robot (roadmap 1.7: close by effort instead)
+    ready_above_cup: 0.25
+    v_max: 0.05
+    v_min: 0.01               # verify on the robot: slowest command that still moves the base
+    decel: 0.05
+    drive_tol: 0.005
+    align_tol: 0.008
+    max_drives: 3
+    settle_s: 0.2             # the D435i streams at 15-30 Hz
+    sample_dt: 0.07
+    samples: 5
+    max_spread: 0.01
+    grasp_height: -1.0
+    use_wrist_yaw: true
+    max_yaw: 0.25
+    arm_len: 0.270            # verify on the robot (sim/check_robot_layer.py measures it)
+    yaw_sign: 1.0             # verify on the robot (sim/check_robot_layer.py measures it)
+    yaw_check_tol: 0.010

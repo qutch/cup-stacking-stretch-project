@@ -1,0 +1,347 @@
+diff --git a/stretch_simulation/launch/stretch_mujoco_driver.launch.py b/stretch_simulation/launch/stretch_mujoco_driver.launch.py
+index 5d80a83..1386da7 100644
+--- a/stretch_simulation/launch/stretch_mujoco_driver.launch.py
++++ b/stretch_simulation/launch/stretch_mujoco_driver.launch.py
+@@ -72,6 +72,31 @@ def generate_launch_description():
+             "use_cameras", default_value="false", choices=["true", "false"]
+         )
+     )
++    ld.add_action(
++        DeclareLaunchArgument(
++            "cameras",
++            default_value="all",
++            description="Comma-separated cameras to render when use_cameras is true: "
++            "cam_d405_rgb, cam_d405_depth, cam_d435i_rgb, cam_d435i_depth, cam_nav_rgb (or 'all')",
++        )
++    )
++    ld.add_action(
++        DeclareLaunchArgument(
++            "broadcast_map_tf",
++            default_value="True",
++            choices=["True", "False"],
++            description="Publish a static map->odom (a fixed map frame for RViz). Set False "
++            "when AMCL or SLAM runs: they publish map->odom themselves.",
++        )
++    )
++    ld.add_action(
++        DeclareLaunchArgument(
++            "scene_xml",
++            default_value="",
++            description="MJCF scene (robot included) to load instead of the default scene; "
++            "ignored with use_robocasa:=true",
++        )
++    )
+     ld.add_action(
+         DeclareLaunchArgument(
+             "use_robocasa", default_value="true", choices=["true", "false"]
+@@ -180,6 +205,9 @@ def generate_launch_description():
+             "mode": LaunchConfiguration("mode"),
+             "use_mujoco_viewer": LaunchConfiguration("use_mujoco_viewer"),
+             "use_cameras": LaunchConfiguration("use_cameras"),
++            "cameras": LaunchConfiguration("cameras"),
++            "scene_xml": LaunchConfiguration("scene_xml"),
++            "broadcast_map_tf": LaunchConfiguration("broadcast_map_tf"),
+             "use_robocasa": LaunchConfiguration("use_robocasa"),
+             "robocasa_task": LaunchConfiguration("robocasa_task"),
+             "robocasa_layout": (
+diff --git a/stretch_simulation/stretch_mujoco_driver/joint_trajectory_server.py b/stretch_simulation/stretch_mujoco_driver/joint_trajectory_server.py
+index 628684f..f5dbc6f 100644
+--- a/stretch_simulation/stretch_mujoco_driver/joint_trajectory_server.py
++++ b/stretch_simulation/stretch_mujoco_driver/joint_trajectory_server.py
+@@ -2,6 +2,7 @@
+ 
+ from functools import cache
+ import time
++import numpy as np
+ import copy
+ import pickle
+ from pathlib import Path
+@@ -99,12 +100,30 @@ class JointTrajectoryAction:
+         self.node.get_logger().info("Received cancel request")
+         return CancelResponse.ACCEPT
+ 
++    # A goal succeeds only once every joint is within this of its target (m or rad), unless the
++    # goal sets its own goal_tolerance. The sim's lift and wrist sag under gravity (~1 cm / ~5 mrad),
++    # so a joint that settles outside tolerance is re-commanded with the remaining error added.
++    GOAL_TOLERANCE = 0.005
++    # The arm doesn't sag and settles exactly, so if it stops short something is in its way (e.g.
++    # the cup); correcting would only shove that object. It is never re-commanded past its target.
++    NO_CORRECTION = (Actuators.arm,)
++    MAX_CORRECTIONS = 5
++    MAX_RESENDS = 2  # re-send a command the joint never reacted to
++    MOVED = 0.002  # a joint that moved less than this since its last command didn't react
++    MAX_CORRECTION = 0.02  # never command more than this beyond the target
++    STILL_VEL = 0.005  # below this speed (m/s or rad/s) a joint counts as stopped...
++    STILL_TIME_S = 0.15  # ...once it has stayed below it this long
++    POINT_TIMEOUT_S = 10.0  # added to the point's time_from_start
++
+     def execute_callback(self, goal_handle):
+         self.node.get_logger().info("Executing trajectory...")
+ 
+-        trajectory = goal_handle.request.trajectory
++        goal = goal_handle.request
++        trajectory = goal.trajectory
+         joint_names = trajectory.joint_names
+         last_positions = {name: 0.0 for name in joint_names}
++        tolerances = {t.name: t.position for t in goal.goal_tolerance if t.position > 0}
++        result = FollowJointTrajectory.Result()
+ 
+         for point in trajectory.points:
+             positions: list[float] = point.positions
+@@ -112,7 +131,9 @@ class JointTrajectoryAction:
+                 point.velocities if point.velocities else [None] * len(joint_names)
+             )
+ 
+-            actuators_in_use = []
++            targets = {}  # actuator -> (joint name, absolute target)
++            base_moves = []
++            failures = []
+ 
+             for i, joint in enumerate(joint_names):
+                 try:
+@@ -126,30 +147,135 @@ class JointTrajectoryAction:
+                 last_positions[joint] = target_position
+                 velocity = velocities[i]
+ 
+-                if (actuator == Actuators.left_wheel_vel or actuator == Actuators.right_wheel_vel) and velocity is not None:
+-                    self.node.sim.set_base_velocity(velocity, 0)
++                if actuator in (Actuators.left_wheel_vel, Actuators.right_wheel_vel):
++                    if velocity is not None:
++                        self.node.sim.set_base_velocity(velocity, 0)
++                    else:
++                        failures.append(f"{joint} is a velocity joint; give it a velocity")
+                     continue
+ 
+-                self.node.sim.move_to(actuator, target_position)
++                if actuator in (Actuators.base_translate, Actuators.base_rotate):
++                    # Relative, as on the real robot: move the base by the change in target.
++                    if self.node.robot_mode != "position":
++                        failures.append(f"{joint} needs position mode (mode is {self.node.robot_mode})")
++                        continue
++                    self.node.sim.move_by(actuator, delta)
++                    base_moves.append(actuator)
++                    continue
+ 
+-                actuators_in_use.append(actuator)
++                self.node.sim.move_to(actuator, target_position)
++                targets[actuator] = (joint, target_position)
+ 
+-            for actuator in actuators_in_use:
+-                self.node.sim.wait_until_at_setpoint(actuator)
++            timeout = self.POINT_TIMEOUT_S + Duration.from_msg(point.time_from_start).nanoseconds * 1e-9
++            failures += self._wait_for_joints(targets, tolerances, timeout)
+ 
+-            for actuator in [Actuators.left_wheel_vel, Actuators.right_wheel_vel]:
+-                self.node.sim.wait_while_is_moving(actuator)
++            # Base moves are checked by position, not through the wheel actuators (stretch_mujoco
++            # raises for those, which used to abort every goal).
++            for actuator in base_moves:
++                self.node.sim.wait_while_is_moving(actuator, timeout=timeout)
+ 
+-            # Simulate wait until point.time_from_start
+-            # self._wait_until(
+-            #     point.time_from_start.sec + point.time_from_start.nanosec * 1e-9
+-            # )
++            if failures:
++                result.error_code = FollowJointTrajectory.Result.GOAL_TOLERANCE_VIOLATED
++                result.error_string = "; ".join(failures)
++                self.node.get_logger().error(f"Trajectory failed: {result.error_string}")
++                goal_handle.abort()
++                return result
+ 
+         goal_handle.succeed()
+-        result = FollowJointTrajectory.Result()
++        result.error_code = FollowJointTrajectory.Result.SUCCESSFUL
+         self.node.get_logger().info("Trajectory execution complete")
+         return result
+ 
++    def _wait_for_joints(self, targets, tolerances, timeout):
++        """Block until every joint in `targets` has stopped within tolerance; return failure messages.
++
++        - A joint that stops without having moved since its last command is re-sent the command.
++        - A joint that stops outside tolerance is re-commanded with the remaining error added
++          (except the arm, see NO_CORRECTION). If the arm stops short, or a correction doesn't
++          move a joint, something is blocking it (e.g. the gripper against a cup): it fails,
++          and is commanded back to the plain target, so it pushes no harder than the unpatched
++          server did.
++        - The gripper is done once it stops: short of the target means it closed on an object
++          or reached its limit.
++        - Once all have stopped, every joint is checked again, because one that settled early
++          can sag after the others finish moving (e.g. the wrist pitch once the yaw stops).
++        """
++        sim = self.node.sim
++        status = sim.pull_status()
++        commanded = {a: target for a, (_, target) in targets.items()}
++        start_pos = {a: a.get_position(status) for a in targets}
++        corrections = dict.fromkeys(targets, 0)
++        resends = dict.fromkeys(targets, 0)
++        corrected = set()  # joints whose last command was a correction
++        still_since = {}
++        failures = {}
++        t_end = time.monotonic() + timeout
++
++        def tol_of(act):
++            return tolerances.get(targets[act][0], self.GOAL_TOLERANCE)
++
++        def command(act, pos):
++            sim.move_to(act, pos)
++            start_pos[act] = act.get_position(sim.pull_status())
++            still_since.pop(act, None)
++
++        def fail(act, msg):
++            failures[act] = msg
++            sim.move_to(act, targets[act][1])
++
++        def settle(pending):
++            while pending and time.monotonic() < t_end and sim.is_running():
++                time.sleep(0.02)
++                status = sim.pull_status()
++                now = time.monotonic()
++                for act in list(pending):
++                    joint, target = targets[act]
++                    pos = act.get_position(status)
++                    if abs(act.get_velocity(status)) > self.STILL_VEL:
++                        still_since.pop(act, None)
++                        continue
++                    if now - still_since.setdefault(act, now) < self.STILL_TIME_S:
++                        continue
++                    # The joint has stopped
++                    err = target - pos
++                    tol = tol_of(act)
++                    moved = abs(pos - start_pos[act]) >= self.MOVED
++                    if abs(err) <= tol / 2:  # aim for the middle so later sag stays inside tol
++                        pending.discard(act)
++                    elif not moved and act in corrected:  # a correction didn't move it: blocked
++                        if abs(err) > tol:
++                            fail(act, f"{joint} blocked at {pos:.4f}, target {target:.4f}")
++                        pending.discard(act)
++                    elif not moved and abs(err) > tol and resends[act] < self.MAX_RESENDS:
++                        resends[act] += 1  # the command may have been lost
++                        command(act, commanded[act])
++                    elif act == Actuators.gripper:
++                        pending.discard(act)
++                    elif act not in self.NO_CORRECTION and corrections[act] < self.MAX_CORRECTIONS:
++                        corrections[act] += 1
++                        corrected.add(act)
++                        commanded[act] = float(np.clip(commanded[act] + err,
++                                                       target - self.MAX_CORRECTION,
++                                                       target + self.MAX_CORRECTION))
++                        command(act, commanded[act])
++                    elif abs(err) <= tol:
++                        pending.discard(act)
++                    else:
++                        fail(act, f"{joint} blocked at {pos:.4f}, target {target:.4f}")
++                        pending.discard(act)
++            for act in pending:
++                joint, target = targets[act]
++                fail(act, f"{joint} did not reach {target:.4f} within {timeout:.0f} s")
++
++        settle(set(targets))
++        if targets:
++            time.sleep(self.STILL_TIME_S)
++            status = sim.pull_status()
++            drifted = {a for a in targets if a not in failures and a != Actuators.gripper
++                       and abs(targets[a][1] - a.get_position(status)) > tol_of(a) / 2}
++            settle(drifted)
++        return list(failures.values())
++
+     def _wait_until(self, seconds):
+         loop_rate = self.node.create_rate(10)
+         t_start = self.node.get_clock().now().seconds_nanoseconds()[0]
+diff --git a/stretch_simulation/stretch_mujoco_driver/stretch_mujoco_driver.py b/stretch_simulation/stretch_mujoco_driver/stretch_mujoco_driver.py
+index 47aa716..607ddc0 100755
+--- a/stretch_simulation/stretch_mujoco_driver/stretch_mujoco_driver.py
++++ b/stretch_simulation/stretch_mujoco_driver/stretch_mujoco_driver.py
+@@ -88,6 +88,10 @@ class StretchMujocoDriver(Node):
+ 
+         super().__init__("stretch_mujoco_driver")
+         self.declare_parameter("use_cameras", False)
++        # Comma-separated StretchCameras names (e.g. "cam_d435i_rgb"), or "all". Each camera costs render time.
++        self.declare_parameter("cameras", "all")
++        # Path to an MJCF scene (robot included) to load instead of stretch_mujoco's default scene
++        self.declare_parameter("scene_xml", "")
+         self.declare_parameter("use_mujoco_viewer", True)
+         self.declare_parameter("use_robocasa", True)
+         self.declare_parameter("robocasa_task", DEFAULT_ROBOCASA_TASK)
+@@ -133,12 +137,24 @@ class StretchMujocoDriver(Node):
+                 style=robocasa_style,
+             )
+ 
++        cameras_param = str(self.get_parameter("cameras").value).strip()
++        if not use_cameras:
++            cameras_to_use = StretchCameras.none()
++        elif cameras_param in ("", "all"):
++            cameras_to_use = StretchCameras.all()
++        else:
++            cameras_to_use = [StretchCameras[name.strip()] for name in cameras_param.split(",")]
++        self.get_logger().info(f"cameras = {[c.name for c in cameras_to_use]}")
++
++        scene_xml = str(self.get_parameter("scene_xml").value or "").strip()
++        if scene_xml and model is None:
++            self.get_logger().info(f"scene = {scene_xml}")
++
+         sim = StretchMujocoSimulator(
++            scene_xml_path=scene_xml or None,
+             model=model,
+             camera_hz=10,
+-            cameras_to_use=(
+-                StretchCameras.all() if use_cameras else StretchCameras.none()
+-            ),
++            cameras_to_use=cameras_to_use,
+         )
+ 
+         sim.start(headless=not use_mujoco_viewer)
+@@ -382,9 +398,12 @@ class StretchMujocoDriver(Node):
+             b.header.frame_id = self.base_frame_id
+             b.child_frame_id = "base_footprint"
+             self.tf_static_broadcaster.sendTransform(b)
+-            b.header.frame_id = "map"
+-            b.child_frame_id = self.odom_frame_id
+-            self.tf_static_broadcaster.sendTransform(b)
++            if self.broadcast_map_tf:
++                # A fixed map frame for RViz. Leave it off when AMCL or SLAM runs: they
++                # publish map->odom themselves (the real driver never publishes it).
++                b.header.frame_id = "map"
++                b.child_frame_id = self.odom_frame_id
++                self.tf_static_broadcaster.sendTransform(b)
+ 
+         # assign relevant arm status to variables
+         arm_status = robot_status.arm
+@@ -695,11 +714,9 @@ class StretchMujocoDriver(Node):
+         try:
+             lidar_data = sensor_status.get_data(StretchSensors.base_lidar)
+ 
+-            self.laser_scan_pub.publish(
+-                create_laser_scan_msg(
+-                    lidar_data, timestamp=current_time, frame_id="laser"
+-                )
+-            )
++            scan = create_laser_scan_msg(lidar_data, timestamp=current_time, frame_id="laser")
++            self.laser_scan_pub.publish(scan)
++            self.raw_scan_pub.publish(scan)
+         except ValueError:
+             ...  # Lidar is disabled, get_data() throws a ValueError
+ 
+@@ -1077,6 +1094,8 @@ class StretchMujocoDriver(Node):
+ 
+         self.declare_parameter("broadcast_odom_tf", False)
+         self.broadcast_odom_tf = self.get_parameter("broadcast_odom_tf").value
++        self.declare_parameter("broadcast_map_tf", True)
++        self.broadcast_map_tf = self.get_parameter("broadcast_map_tf").value
+         self.get_logger().info("broadcast_odom_tf = " + str(self.broadcast_odom_tf))
+         if self.broadcast_odom_tf:
+             self.tf_broadcaster = tf2_ros.TransformBroadcaster(self)
+@@ -1152,6 +1171,13 @@ class StretchMujocoDriver(Node):
+             "/scan_filtered",
+             qos_profile=QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
+         )
++        # The real robot has both: /scan from the lidar and /scan_filtered from a filter.
++        # Nav2's AMCL (parcs_stretch_nav2 configs) reads /scan.
++        self.raw_scan_pub = self.create_publisher(
++            LaserScan,
++            "/scan",
++            qos_profile=QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT),
++        )
+ 
+         self.camera_publishers = {
+             camera.name: self.create_publisher(

@@ -22,6 +22,15 @@ MIN_DEPTH = 0.1
 MAX_DEPTH = 3.0
 
 
+def depth_in_meters(depth, encoding):
+    """A depth image as float32 meters. The real D435i sends 16UC1 millimeters; the sim
+    sends 32FC1 meters. Zero (no reading) stays zero."""
+    d = np.asarray(depth)
+    if encoding in ("16UC1", "mono16"):
+        return d.astype(np.float32) / 1000.0
+    return d.astype(np.float32)
+
+
 def red_mask(bgr):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     mask = None
@@ -182,3 +191,31 @@ def plan_reach(cup, cup_radius, table_top, edge_dist, offsets, *,
         return None, (f"table edge is {edge_dist:.2f} m away but the retracted gripper "
                       f"reaches {tip:.2f} m; lowering it would hit the table")
     return {"lift": lift, "extension": ext, "grasp_z": grasp_z}, None
+
+
+def measure_cup(img, depth, K_color, K_depth, T_base, T_cd, full=True):
+    """One cup measurement from one color + depth frame pair.
+
+    T_base: (R, t) depth optical frame -> base_link; T_cd: depth optical -> color optical.
+    Returns a dict with img, mask and bbox, plus cup (center xyz in base_link) and
+    radius when the cup was found, and with `full` also table_top and edge (see
+    estimate_table_top and table_edge_distance). If the cup was not found, "why" says
+    why."""
+    bbox, mask = find_red_blob(img)
+    out = {"img": img, "mask": mask, "bbox": bbox}
+    if bbox is None:
+        out["why"] = f"no red blob in the image ({int(np.count_nonzero(mask))} red pixels)"
+        return out
+    R, t = T_base
+    cup, radius = locate_cup(depth, K_depth, R, t, mask, K_color, T_cd[0], T_cd[1], bbox)
+    if cup is None:
+        out["why"] = f"red blob at {bbox} but too few depth points on it"
+        return out
+    out.update(cup=cup, radius=radius)
+    if full:
+        pts = to_base(backproject(depth, K_depth, step=2), R, t)
+        top = estimate_table_top(pts, cup, radius)
+        edge = table_edge_distance(pts, cup[0], 0.3,
+                                   (top if top is not None else cup[2]) + 0.02)
+        out.update(table_top=top, edge=edge)
+    return out

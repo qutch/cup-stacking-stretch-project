@@ -1,0 +1,161 @@
+diff --git a/stretch_mujoco/mujoco_server.py b/stretch_mujoco/mujoco_server.py
+index e5abc8e..7e33571 100644
+--- a/stretch_mujoco/mujoco_server.py
++++ b/stretch_mujoco/mujoco_server.py
+@@ -5,7 +5,7 @@ import os
+ import signal
+ import threading
+ import time
+-from typing import Callable
++from typing import Any, Callable
+ 
+ import click
+ import mujoco
+@@ -39,6 +39,9 @@ class MujocoServerProxies:
+     _cameras: "DictProxy[str, StatusStretchCameras]"
+     _sensors: "DictProxy[str, StatusStretchSensors]"
+     _joint_limits: "DictProxy[str, dict[Actuators, tuple[float, float]]]"
++    # Shared with StretchMujocoSimulator: both sides read-modify-write the command proxy, so without
++    # a common lock a command sent while the server is mid-update gets overwritten (lost).
++    command_lock: Any = None
+ 
+     def __setattr__(self, name: str, value) -> None:
+         try:
+@@ -145,6 +148,9 @@ class BaseController:
+         """
+         Translate the base by a certain w.r.t base global pose
+         """
++        if x_inc == 0:  # a zero move is a stop (the driver sends these after cmd_vel times out)
++            return self._clear_command(is_stop_motion=True)
++
+         start_pose = self.start_pose[:2]
+ 
+         sign = 1 if x_inc > 0 else -1
+@@ -157,6 +163,9 @@ class BaseController:
+         """
+         Rotate the base by a certain w.r.t base global pose
+         """
++        if theta_inc == 0:
++            return self._clear_command(is_stop_motion=True)
++
+         start_pose = self.start_pose[-1]
+         sign = 1 if theta_inc > 0 else -1
+         if not abs(start_pose - self.get_base_pose()[-1]) <= abs(theta_inc):
+@@ -368,6 +377,12 @@ class MujocoServer:
+             "This is headless mode. Use MujocoServerPassive or MujocoServerManaged to run the UI simulator."
+         )
+ 
++    # Sensors (incl. the 360-ray lidar) are only read at sensor_hz (15Hz), but computing them on every
++    # 2ms physics step makes mj_step ~17x slower. Compute them at this sim-time period instead.
++    SENSOR_UPDATE_PERIOD_S = 1 / 30
++    PROXY_SYNC_PERIOD_S = 1 / 100
++    MAX_CATCHUP_S = 0.1
++
+     def _physics_step(self, lock: contextlib.AbstractContextManager):
+         """
+         Calls mj_step and _ctrl_callback, and sleeps until the next timestep.
+@@ -375,10 +390,23 @@ class MujocoServer:
+         start_time = time.perf_counter()
+ 
+         with lock:
++            last = getattr(self, "_last_sensor_time", -1.0)
++            if self.mjdata.time - last >= self.SENSOR_UPDATE_PERIOD_S or self.mjdata.time < last:
++                self.mjmodel.opt.disableflags &= ~int(mujoco.mjtDisableBit.mjDSBL_SENSOR)
++                self._last_sensor_time = self.mjdata.time
++            else:
++                # sensordata keeps its last values while disabled
++                self.mjmodel.opt.disableflags |= int(mujoco.mjtDisableBit.mjDSBL_SENSOR)
+             mujoco._functions.mj_step(self.mjmodel, self.mjdata)
+             self._ctrl_callback(self.mjmodel, self.mjdata)
+ 
+-        time_until_next_step = self.mjmodel.opt.timestep - (time.perf_counter() - start_time)
++        # Pace against a running schedule instead of per-step, so sleep overshoot (large on WSL2) is
++        # caught up on the next steps rather than lost. Re-sync if far behind (e.g. after a long stall).
++        next_t = getattr(self, "_next_step_time", start_time)
++        if start_time - next_t > self.MAX_CATCHUP_S:
++            next_t = start_time
++        self._next_step_time = next_t + self.mjmodel.opt.timestep
++        time_until_next_step = self._next_step_time - time.perf_counter()
+         if time_until_next_step > 0:
+             # Sleep to match the timestep.
+             time.sleep(time_until_next_step)
+@@ -459,8 +487,17 @@ class MujocoServer:
+             return
+ 
+         self.physics_fps_counter.tick(sim_time=data.time)
+-        self.pull_status()
+-        self.push_command(self.data_proxies.get_command())
++
++        # Each status/command exchange with the client process costs ~2ms of IPC, which capped physics
++        # below real time when done on every 2ms step. Sync at a fixed wall-clock rate instead.
++        now = time.perf_counter()
++        if now - getattr(self, "_last_proxy_sync", 0.0) >= self.PROXY_SYNC_PERIOD_S:
++            self._last_proxy_sync = now
++            self.pull_status()
++            with self.data_proxies.command_lock or contextlib.nullcontext():
++                self.push_command(self.data_proxies.get_command())
++        else:
++            self.base_controller.update()  # keep base velocity / move_by control running every step
+ 
+     def pull_status(self):
+         """
+diff --git a/stretch_mujoco/mujoco_server_camera_manager.py b/stretch_mujoco/mujoco_server_camera_manager.py
+index 5720b17..b73787e 100644
+--- a/stretch_mujoco/mujoco_server_camera_manager.py
++++ b/stretch_mujoco/mujoco_server_camera_manager.py
+@@ -110,6 +110,8 @@ class MujocoServerCameraManagerSync:
+         )
+ 
+         renderer._scene_option.flags[mujoco._enums.mjtVisFlag.mjVIS_RANGEFINDER] = False # Disables the lidar yellow lines.
++        # Don't draw sites: the 361 lidar rangefinder site spheres made each frame ~20x slower to render.
++        renderer._scene_option.sitegroup[:] = 0
+ 
+         from stretch_mujoco.mujoco_server_passive import MujocoServerPassive
+ 
+@@ -134,7 +136,10 @@ class MujocoServerCameraManagerSync:
+         with self.camera_lock:
+             renderer.update_scene(data=self.mujoco_server.mjdata, camera=camera.camera_name_in_mjcf)
+ 
+-            render = renderer.render()
++        # Only update_scene reads mjdata, so render outside the lock and let physics keep
++        # stepping. Rendering under the lock starved the physics thread (sim time almost
++        # stopped) whenever a frame took longer than the camera period.
++        render = renderer.render()
+ 
+         post_render = camera.post_processing_callback
+         if post_render:
+diff --git a/stretch_mujoco/mujoco_server_passive.py b/stretch_mujoco/mujoco_server_passive.py
+index 864a626..086a85b 100644
+--- a/stretch_mujoco/mujoco_server_passive.py
++++ b/stretch_mujoco/mujoco_server_passive.py
+@@ -60,6 +60,7 @@ class MujocoServerPassive(MujocoServer):
+         )
+ 
+         self.viewer._opt.flags[mujoco._enums.mjtVisFlag.mjVIS_RANGEFINDER] = False # Disables the lidar yellow lines.
++        self.viewer._opt.sitegroup[:] = 0 # Hide the 361 lidar site spheres (very slow to draw). Re-enable under Rendering > Site groups.
+ 
+         with self.viewer as viewer:
+             physics_thread = threading.Thread(
+diff --git a/stretch_mujoco/stretch_mujoco_simulator.py b/stretch_mujoco/stretch_mujoco_simulator.py
+index b5ef605..89ce61d 100644
+--- a/stretch_mujoco/stretch_mujoco_simulator.py
++++ b/stretch_mujoco/stretch_mujoco_simulator.py
+@@ -1,5 +1,5 @@
+ import atexit
+-from multiprocessing import Lock, Manager, Process
++from multiprocessing import Manager, Process
+ 
+ import multiprocessing
+ import platform
+@@ -69,7 +69,10 @@ class StretchMujocoSimulator:
+ 
+         self.data_proxies = MujocoServerProxies.default(self._manager)
+ 
+-        self._command_lock = Lock()
++        # A Manager lock (not multiprocessing.Lock, which can't cross into the "spawn" server process)
++        # shared with the server, so its command updates can't overwrite ours.
++        self._command_lock = self._manager.Lock()
++        self.data_proxies.command_lock = self._command_lock
+ 
+     def start(
+         self, show_viewer_ui: bool = False, headless: bool = False, use_passive_viewer: bool = True

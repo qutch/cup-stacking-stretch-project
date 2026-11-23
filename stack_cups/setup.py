@@ -1,3 +1,6 @@
+import os
+from glob import glob
+
 from setuptools import find_packages, setup
 
 package_name = "stack_cups"
@@ -9,6 +12,9 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", ["resource/" + package_name]),
         ("share/" + package_name, ["package.xml"]),
+        (os.path.join("share", package_name, "launch"), glob("launch/*.launch.py")),
+        (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
+        (os.path.join("share", package_name, "maps"), glob("maps/*.yaml") + glob("maps/*.pgm")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -24,6 +30,8 @@ setup(
     entry_points={
         "console_scripts": [
             "find_cup = stack_cups.cup_finder_controller:main",
+            "check_interfaces = stack_cups.check_interfaces:main",
+            "sim_scene = stack_cups.sim_scene:main",
         ],
     },
 )
