@@ -203,6 +203,22 @@ Update 2026-11-22 (desktop, after PR #6 merged; results in the timing file):
 11. Fewer verification runs than the plan listed (each camera run cost 10-40 minutes on the
     Mac) — less run-to-run variance data.
 
+### Review of the rulings (2026-11-23, on the desktop)
+
+| # | Status | Notes |
+|---|---|---|
+| 1 | Resolved | `aborted_ok_tol` is a parameter: 0.05 in sim.yaml (the unpatched sim), 0.0 in robot.yaml (an aborted move fails). With PR #6's patches the sim reports honest results anyway. |
+| 2 | Keep | The real robot has no `/clock`, so it runs on wall time. |
+| 3 | Moot | The patched sim runs at real time: sim and wall time match in every run. |
+| 4 | Changed | Navigation mode is still entered first, but `switch_modes` now puts the driver in position mode for every arm and head move and back in navigation mode for base moves (roadmap 1.3b). The gripper still opens with the wrist-straighten move. |
+| 5 | Keep | |
+| 6 | Resolved | Per platform: sim `settle_s` 0.3 / `sample_dt` 0.1, robot 0.2 / 0.07. |
+| 7 | Keep | Not re-checked on the desktop; `lookup()` works and is cheap. |
+| 8 | Keep | Real-time sim: no crawling seen. |
+| 9 | Keep | Watch it on the robot: wheel odometry drifts, and tracking (1.1) and search drives (1.2) also lean on odometry now. |
+| 10 | Resolved | Every run now ends with an arm move, so the driver is in position mode at exit and no cmd_vel creep can follow; sim base moves are also real speed now (wheel-gear fix). |
+| 11 | Resolved | On the desktop, dozens of runs at real time (see the timing file and the commit messages). |
+
 ## 11. Debugging playbook
 
 1. Cup not found → read the reason in the log; run `sim/check_measure.py` (same class, no

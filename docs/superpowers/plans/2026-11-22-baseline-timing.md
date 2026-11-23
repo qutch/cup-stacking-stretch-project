@@ -46,3 +46,24 @@ time (GPU, `MUJOCO_GL=egl`), so sim and wall time match.
 Run C's blocked reach was likely a finger hitting the 500 g cylinder or the box 10 cm
 next to it in the default scene; with the realistic task-scene cups the wrist-yaw path
 reached and lifted (roadmap 1.6 to look into it).
+
+## Final (plan Task 8, 2026-11-23, desktop, patched sim, `cups:=single`, `grasp:=true`)
+
+A 20 g task-scene cup, real time (sim = wall), viewer on, fresh sim per run, base moved
+first so the cup starts about 5, 20 and 40 cm from the arm line. Sim speeds: `v_max` 0.3,
+`decel` 0.2, with the sim's wheel-gear fix. Seconds:
+
+| Phase | ~5 cm | ~20 cm | ~40 cm |
+|---|---|---|---|
+| AIM_HEAD | 1.5 | 1.5 | 1.5 |
+| SQUARE | 1.3 | 1.3 | 1.3 |
+| READY | 6.0 | 6.0 | 2.4 |
+| SEARCH | - | - | 11.6 (cup out of view: found by the head, 40 cm drive) |
+| ALIGN | 4.7: wrist +0.146 for +3.9 cm | 7.4: one drive, wrist -0.113 for -3.1 cm | 4.6: wrist -0.083 for -2.2 cm |
+| REACH (incl. grasp check) | 13.2 | 12.2 | 13.2 |
+| CARRY | 5.5 | 5.4 | 5.3 |
+| **Total** | **32.6, DONE carrying the cup** | **34.1, DONE** | **40.3, DONE** |
+
+Each ALIGN ended with the grasp point within 0.1 cm of the cup by TF. Against run B3
+(15.7 s sim time to the gripper at the cup, no grasp, ~1% real time: 31 wall minutes),
+a full pick-up and carry now takes 33-40 s of real time; the old find_cup never finished.
