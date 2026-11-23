@@ -12,15 +12,19 @@ still takes move_to_pose goals.
 Phases (each logged as it starts, with its duration when it ends):
   1. START     - wait for camera images, depth, camera info, TF and /odom
   2. AIM_HEAD  - point the head camera at the table on the robot's arm side
-  3. READY     - measure the cup, raise the lift above it, straighten the wrist,
-                 open the gripper, read the grasp point's offsets from TF
+  3. READY     - measure the closest loose cup (SEARCH first if none is in view: turn
+                 the head, then drive along the table), raise the lift above it,
+                 straighten the wrist, open the gripper, read the grasp offsets from TF
   4. ALIGN     - measure (stopped, fresh frames), drive exactly the measured offset by
                  odometry, repeat at most `max_drives` times; with use_wrist_yaw, drive
                  only until the wrist yaw can cover the rest, then turn the wrist and
                  check the grasp point (from TF) is within yaw_check_tol of the cup
   5. REACH     - measure the cup, table top and table edge, check the move is safe,
-                 lower to cup height, then extend the arm to the cup
-  6. DONE / FAILED
+                 lower to cup height, then extend the arm to the cup; with grasp,
+                 close the gripper and check the cup comes along
+  6. CARRY     - with grasp: lift the cup clear, pull the arm in (a failed grasp or a
+                 drop goes to RETRY: open, back off, start again from READY)
+  7. DONE / FAILED
 
 Times are on the node's clock: sim time in the MuJoCo sim (which can run much slower
 than real time), wall time on the robot. The wall time is logged alongside.
@@ -194,11 +198,71 @@ class FindCup(CupRobot):
         self.set_phase("AIM_HEAD", f"pan={pan:.2f} tilt={tilt:.2f}")
         self.move({"joint_head_pan": pan, "joint_head_tilt": tilt})
 
-    def ready_arm(self):
-        self.set_phase("READY", "measuring the cup, raising the lift, straightening the wrist")
+    def look(self, pan, tilt):
+        self.move({"joint_head_pan": pan, "joint_head_tilt": tilt})
+        return self.measure_fresh(self.cfg["search_samples"])
+
+    def find_target(self):
+        """Roadmap 1.2: measure the cup; if none is in view, search for one. First turn
+        the head (pan steps both ways, then the same farther out with the head tilted
+        up), then drive along the heading in steps of search_drive_step, up to
+        search_drive_max each way, looking with the default head pose at each stop. A cup
+        found off to the side is driven beside the arm before measuring it again with
+        the default head pose. Returns that measurement; raises if no cup is found."""
+        c = self.cfg
+        m = self.measure_fresh()
+        if m is not None:
+            return m
+        first_miss = self.camera.last_miss
+        pan0, tilt0 = c["head_pan"], c["head_tilt"]
+        step, n = c["search_pan_step"], int(c["search_pan_steps"])
+        pans = [pan0 + sgn * k * step for k in range(1, n + 1) for sgn in (1, -1)]
+        poses = [(p, tilt0) for p in pans] + [(p, tilt0 + c["search_tilt_up"])
+                                              for p in [pan0] + pans]
+        if n > 0 or c["search_drive_max"] > 0:
+            self.set_phase("SEARCH", f"no cup in view ({first_miss}): turning the head")
+        found = None
+        for pan, tilt in poses if n > 0 else []:
+            found = self.look(pan, tilt)
+            if found is not None:
+                self.log(f"[SEARCH] cup seen with the head at pan={pan:+.2f} tilt={tilt:+.2f}"
+                         f": at base ({found['cup'][0]:+.3f}, {found['cup'][1]:+.3f})")
+                break
+        if found is None and n > 0:
+            self.move({"joint_head_pan": pan0, "joint_head_tilt": tilt0})
+        if found is None:
+            d, dmax = c["search_drive_step"], c["search_drive_max"]
+            k = int(dmax / d + 1e-6) if d > 0 else 0
+            stops = [i * d for i in range(1, k + 1)] + [-i * d for i in range(1, k + 1)]
+            here = 0.0
+            for x in stops:
+                moved = self.drive_by(x - here, v_max=c["v_max"], v_min=c["v_min"],
+                                      decel=c["decel"], tol=c["drive_tol"])
+                here += moved
+                self.log(f"[SEARCH] drove to {here:+.2f} m from the start, looking")
+                found = self.measure_fresh(c["search_samples"])
+                if found is not None:
+                    break
+        if found is None:
+            raise RuntimeError(f"cup not found: {first_miss}; no cup seen while searching")
+        # bring the cup beside the arm and look at it with the usual head pose
+        self.move({"joint_head_pan": pan0, "joint_head_tilt": tilt0})
+        offs = self.arm_offsets(BASE_FRAME, GRASP_FRAME)
+        arm_x = offs["x"] if offs else 0.0
+        dx = float(found["cup"][0] - arm_x)
+        if abs(dx) > c["align_tol"]:
+            moved = self.drive_by(dx, v_max=c["v_max"], v_min=c["v_min"], decel=c["decel"],
+                                  tol=c["drive_tol"])
+            self.log(f"[SEARCH] drove {moved * 100:+.1f} cm to bring the cup beside the arm")
         m = self.measure_fresh()
         if m is None:
-            raise RuntimeError(f"cup not found: {self.camera.last_miss}")
+            raise RuntimeError(f"cup seen while searching but not from beside it: "
+                               f"{self.camera.last_miss}")
+        return m
+
+    def ready_arm(self):
+        self.set_phase("READY", "measuring the cup, raising the lift, straightening the wrist")
+        m = self.find_target()
         last = m["samples"][-1]
         placed = sum(P.in_area(c["cup"][:2], last.get("tape_area")) for c in last["cups"])
         self.log(f"cup at base ({m['cup'][0]:.3f}, {m['cup'][1]:.3f}, {m['cup'][2]:.3f}) m"

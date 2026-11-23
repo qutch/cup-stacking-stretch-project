@@ -515,7 +515,12 @@ which also sizes the sim's cups).
   - [x] Keep the target: the raised gripper hid it on the 74 cm table (`ready_above_cup`
     0.25 -> 0.05 m), and after the first measurement each attempt keeps the cup nearest
     its last position in odom (`track_radius`), so another cup cannot take its place.
-- [ ] **1.2 Search when no cup is in view**: pan the head, or turn and drive.
+- [x] **1.2 Search when no cup is in view** (SEARCH, in READY): turn the head
+      (`search_pan_step` x `search_pan_steps` each way, then tilted up by
+      `search_tilt_up`), then drive along the heading in `search_drive_step` stops up to
+      `search_drive_max` each way (blind: robot.yaml allows only 0.4 m). A cup found off
+      to the side is driven beside the arm. Sim: a cup 1.2 m ahead is found by the head
+      and carried; with the head search off, the drive search finds it.
 - [ ] **1.3 Drive to the cup's general area** (partial: Nav2 from the starter package)
   - Save a pose near the cup table in the map frame and drive there with
     `BasicNavigator.goToPose`, with the arm side facing the table.

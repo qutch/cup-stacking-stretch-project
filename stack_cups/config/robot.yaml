@@ -49,6 +49,12 @@
     tape_val_min: 60
     track_radius: 0.08
     split_min_rise: 0.015
+    search_pan_step: 0.6
+    search_pan_steps: 2
+    search_tilt_up: 0.3
+    search_drive_step: 0.4
+    search_drive_max: 0.4      # blind drive: verify the path is clear
+    search_samples: 3
     ready_above_cup: 0.05     # higher hides the cup from the head camera
     v_max: 0.05
     v_min: 0.01               # verify on the robot: slowest command that still moves the base

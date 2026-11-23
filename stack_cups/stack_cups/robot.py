@@ -572,16 +572,19 @@ class CupRobot(hm.HelloNode):
             self._publish_cmd()
 
     def drive_by(self, distance, *, v_max, v_min, decel, tol=0.003, stall_s=2.0,
-                 timeout_s=30.0, max_reversals=3):
+                 timeout_s=None, max_reversals=3):
         """Drive `distance` meters along the current heading, steered by /odom.
         Returns the progress reached; raises RuntimeError on a stall or timeout
-        (both in ROS time). The command is always left at 0, even on an exception,
+        (both in ROS time). The default timeout is 30 s plus twice the time the distance
+        takes at v_min (the sim base runs slower than commanded: ~3.5 cm/s at 15 cm/s). The command is always left at 0, even on an exception,
         a stop request or Ctrl+C."""
         if not self.nav_active:
             raise RuntimeError("drive_by needs navigation mode")
         start = self.odom_pose()
         if start is None:
             raise RuntimeError(f"no odometry on {self.odom_topic}")
+        if timeout_s is None:
+            timeout_s = 30.0 + 2.0 * abs(distance) / max(v_min, 0.01)
         t0 = stall_t = self.now()
         progress = stall_ref = 0.0
         last_sign, reversals = 0.0, 0

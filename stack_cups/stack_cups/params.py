@@ -83,6 +83,15 @@ FIND_CUP = {
     "track_radius": 0.08,
     # m, split a red blob where the front surface bulges back this much between two cups
     "split_min_rise": 0.015,
+    # --- search when no cup is in view (roadmap 1.2)
+    "search_pan_step": 0.6,  # rad between head pans (the camera sees ~1.2 rad across)
+    "search_pan_steps": 2,  # pans each way from head_pan; 0 = do not turn the head
+    "search_tilt_up": 0.3,  # rad, then the same pans with the head tilted this much up
+    # m, then drive along the heading in these steps, up to search_drive_max each way
+    # (forward first); 0 = do not drive. Driving is blind: keep the path clear.
+    "search_drive_step": 0.4,
+    "search_drive_max": 1.2,
+    "search_samples": 3,  # samples per look (fewer than `samples`: only to see a cup)
     # m, grasp point height above the cup's center while driving (arm retracted, so not
     # over the table). Keep it low: at 0.25 m the raised gripper sat between the head
     # camera and a cup on a 74 cm table, so ALIGN lost the cup after the first drive.
