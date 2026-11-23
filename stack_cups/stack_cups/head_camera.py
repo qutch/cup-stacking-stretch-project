@@ -12,7 +12,6 @@ samples agree even if the base creeps.
 """
 
 import threading
-import time
 
 import numpy as np
 from cv_bridge import CvBridge
@@ -98,11 +97,13 @@ class HeadCamera:
         with self.lock:
             target = self.depth_count + n
         t0 = self.robot.now()
-        while self.robot.now() - t0 < timeout:
+        # _idle honours stop requests and keeps OpenCV windows alive; clock_stalled ends
+        # the wait if ROS time stops (a frozen sim would never reach the timeout)
+        while self.robot.now() - t0 < timeout and not self.robot.clock_stalled():
             with self.lock:
                 if self.depth_count >= target:
                     return True
-            time.sleep(0.02)
+            self.robot._idle(0.02)
         return False
 
     def snapshot(self, base_frame="base_link"):
@@ -130,8 +131,8 @@ class HeadCamera:
         time so no frame used was rendered while moving, takes `samples` measurements
         `sample_dt` apart, and returns the last one with `key` replaced by their median
         (in odom, mapped back into base_link with the base's pose now) and "spread"
-        added. If they spread more than `max_spread`, takes `samples` more once. On
-        failure the reasons are in self.last_miss."""
+        added. If they spread more than `max_spread`, takes `samples` more once, and
+        returns None if they still do. On failure the reasons are in self.last_miss."""
         robot = self.robot
         n = int(samples)
         if not self.wait_new_depth(1):
@@ -175,6 +176,12 @@ class HeadCamera:
         if not ok:
             collect(2 * n)
             k, c, spread, ok = center()
+        if not ok:
+            # still too noisy to drive or reach on: report it like a miss
+            self.last_miss = (f"{key} measurements spread {spread * 1000:.0f} mm "
+                              f"(over {max_spread * 1000:.0f} mm) in {len(found)} samples")
+            robot.get_logger().warn(f"{key} not measured reliably: {self.last_miss}")
+            return None
         out = dict(found[-1])
         if k == "odom_point":
             # back into base_link with the base's pose now, i.e. where the target is

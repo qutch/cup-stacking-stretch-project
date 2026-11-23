@@ -151,7 +151,7 @@ class FindCup(CupRobot):
             if self.now() - t0 > 30 or time.time() - w0 > 120:
                 raise RuntimeError(f"no {', '.join(missing)} after 30 s - was the sim launched "
                                    "with use_cameras:=true?")
-            time.sleep(0.2)
+            self._idle(0.2)  # honours stop requests, keeps the OpenCV windows alive
 
     def aim_head(self):
         if not self.cfg["aim_head"]:
