@@ -448,7 +448,8 @@ class FindCup(CupRobot):
         if self.cfg["grasp"]:
             c = self.cfg
             finger, contact = self.close_gripper(c["gripper_closed"], c["gripper_squeeze"],
-                                                 c["gripper_max_effort"])
+                                                 c["gripper_max_effort"], step=c["gripper_step"],
+                                                 effort_rise=c["gripper_effort_rise"])
             self.check_grasp(cup, finger, contact)
             return {"cup": cup, "table_top": top}
         return None
@@ -526,14 +527,25 @@ class FindCup(CupRobot):
         lift0 = self.joint_pos("joint_lift")
         self.move({"joint_lift": lift0 + c["grasp_check_lift"]})
         after = self.wait_joint_still(joint) or self.joint_pos(joint)
+        effort = self.joint_effort(joint)
+        base = getattr(self, "grip_effort_base", None)
         m = self.measure_fresh()
         seen = (f"camera: {self.camera.last_miss}" if m is None else
                 f"camera: cup center rose {float(m['cup'][2] - cup[2]) * 100:+.1f} cm")
+        felt = ("" if effort is None or base is None else
+                f", effort {effort:+.1f} (closing on air {base:+.1f})")
         self.log(f"[REACH] grasp check after a {c['grasp_check_lift'] * 100:.0f} cm lift: "
-                 f"fingers {finger:+.3f} -> {after:+.3f} ({seen})")
+                 f"fingers {finger:+.3f} -> {after:+.3f}{felt} ({seen})")
         if finger - after > c["grasp_slip_tol"]:
             raise GraspFailed(f"the cup was not lifted: the fingers closed from {finger:+.3f} "
                               f"to {after:+.3f} while lifting (it slipped or stayed behind)")
+        # A soft cup held by a small squeeze gives the fingers little room to close if it
+        # slips out; the effort shows it instead: back to what it reads on air
+        rise = c["gripper_effort_rise"]
+        if rise > 0.0 and effort is not None and base is not None \
+                and abs(effort - base) < 0.5 * rise:
+            raise GraspFailed(f"the cup was not lifted: the gripper effort is {effort:+.1f}, "
+                              f"about what it reads closing on air ({base:+.1f})")
 
     def carry(self, grasp):
         """Roadmap 1.9: lift the cup clear of the table, pull the arm in, keep it upright.
@@ -633,7 +645,8 @@ def main():
                 # the gripper to stay where it is (sim and real driver), which drops the
                 # squeeze on a held cup, so the cup could slip out after the run
                 try:
-                    node.drive(0.0)
+                    if node.nav_active:  # in position mode the driver rejects cmd_vel
+                        node.drive(0.0)
                 except Exception:  # noqa: BLE001 - ROS may already be shutting down
                     pass
             else:

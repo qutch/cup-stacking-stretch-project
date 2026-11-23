@@ -418,33 +418,52 @@ class CupRobot(hm.HelloNode):
             return e if e != 0.0 else None
         return None
 
-    def close_gripper(self, closed, squeeze, max_effort=0.0, step=0.05, stall_tol=0.01):
+    def close_gripper(self, closed, squeeze, max_effort=0.0, step=0.05, stall_tol=0.01,
+                      effort_rise=0.0, baseline_steps=2):
         """Close the gripper until it touches something, then squeeze a little (roadmap 1.7).
 
-        Closes in `step`s toward `closed` (finger units). Contact is when the fingers stop
-        `stall_tol` short of a step's command, or the effort exceeds `max_effort` (> 0;
-        only where joint_states reports effort, i.e. not in the sim). Then holds at the
+        Closes in `step`s toward `closed` (finger units). Contact is when, after a step:
+        - the fingers stopped `stall_tol` short of the command (something stiff), or
+        - |effort| passed `max_effort` (> 0), or
+        - the effort moved more than `effort_rise` (> 0) away from what it read over the
+          first `baseline_steps` steps, while the fingers still closed on air. A single
+          Solo cup gives way, so the fingers never stop on it: on the real robot they
+          crushed it flat and found "nothing". Only the effort shows the touch.
+        Effort only where joint_states reports it (not in the sim). Then holds at the
         contact position minus `squeeze`, so the grip force is set by `squeeze`, not by
-        how far `closed` is past the object. Returns (finger position, contact)."""
+        how far `closed` is past the object. Returns (finger position, contact), and
+        keeps the free-closing effort in self.grip_effort_base (None if not reported)."""
         joint = "joint_gripper_finger_left"
         pos = self.joint_pos(joint)
         if pos is None:
             raise RuntimeError(f"no {joint} in joint_states")
-        cmd = pos
+        log = self.get_logger().info
+        cmd, free = pos, []
+        self.grip_effort_base = None
         while cmd > closed:
             cmd = max(cmd - step, closed)
             self._move_gripper(joint, cmd)
             pos = self.wait_joint_still(joint) or self.joint_pos(joint)
             effort = self.joint_effort(joint)
-            if pos - cmd > stall_tol or (max_effort > 0.0 and effort is not None
-                                         and abs(effort) > max_effort):
+            rise = None
+            if effort is not None:
+                if len(free) < baseline_steps:
+                    free.append(effort)
+                    self.grip_effort_base = float(np.median(free))
+                else:
+                    rise = abs(effort - self.grip_effort_base)
+            log(f"gripper step: commanded {cmd:+.3f}, at {pos:+.3f}, effort "
+                f"{'n/a' if effort is None else f'{effort:+.1f}'}"
+                f"{'' if rise is None else f' ({rise:.1f} from the free close)'}")
+            if (pos - cmd > stall_tol
+                    or (max_effort > 0.0 and effort is not None and abs(effort) > max_effort)
+                    or (effort_rise > 0.0 and rise is not None and rise > effort_rise)):
                 hold = max(pos - squeeze, closed)
                 self._move_gripper(joint, hold)
-                self.get_logger().info(
-                    f"gripper touched something at {pos:+.3f} (commanded {cmd:+.3f}, effort "
+                log(f"gripper touched something at {pos:+.3f} (commanded {cmd:+.3f}, effort "
                     f"{'n/a' if effort is None else f'{effort:.1f}'}); holding at {hold:+.3f}")
                 return self.wait_joint_still(joint) or self.joint_pos(joint), True
-        self.get_logger().info(f"gripper closed to {pos:+.3f} without touching anything")
+        log(f"gripper closed to {pos:+.3f} without touching anything")
         return pos, False
 
     def _move_gripper(self, joint, target):

@@ -65,6 +65,11 @@ FIND_CUP = {
     # Stop closing when |effort| passes this (robot only; the sim reports no effort).
     # 0 = close by position only.
     "gripper_max_effort": 0.0,
+    # Stop closing when the effort moves this much from what it read while the fingers
+    # still closed on air (robot only; see CupRobot.close_gripper). A single Solo cup
+    # gives way, so the fingers never stop on it; at 0 they crushed it flat. 0 = off.
+    "gripper_effort_rise": 0.0,
+    "gripper_step": 0.05,  # finger units per closing step (smaller: a gentler first touch)
     # m, lift to check the cup comes along. Must be more than the grasp point's distance
     # below the cup's top (half a 12 cm cup at center grasps), so the fingers clear a
     # cup that stayed on the table and close on nothing.

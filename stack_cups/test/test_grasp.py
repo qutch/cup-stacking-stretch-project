@@ -112,3 +112,37 @@ def test_other_move_errors_still_raise():
 
     with pytest.raises(RuntimeError, match="rejected"):
         close(Rejecting(pos=0.3))
+
+
+class SoftCup(FakeGripper):
+    """A single Solo cup: it gives way, so the fingers follow every command, but the
+    effort grows as they press into it (from `base`, the effort closing on air)."""
+
+    def __init__(self, pos=0.3, cup=0.2, per_unit=200.0, base=-0.5):
+        super().__init__(pos=pos)
+        self.cup, self.per_unit, self.base = cup, per_unit, base
+
+    def move(self, pose):
+        self.cmd = pose[JOINT]
+        self.commands.append(self.cmd)
+        self.pos = self.cmd
+
+    def joint_effort(self, name):
+        return self.base - self.per_unit * max(0.0, self.cup - self.pos)
+
+
+def test_soft_cup_crushed_without_effort_rise():
+    # what the real robot did: the fingers never stop on a soft cup
+    pos, contact = close(SoftCup(), step=0.025)
+    assert not contact
+    assert pos == pytest.approx(-0.1)
+
+
+def test_soft_cup_found_by_effort_rise():
+    fake = SoftCup(pos=0.3, cup=0.2)
+    pos, contact = close(fake, step=0.025, squeeze=0.02, effort_rise=4.0)
+    assert contact
+    # free close reads -0.5; 0.175 is 0.025 into the cup: -5.5, a rise of 5.0
+    assert fake.commands[-2] == pytest.approx(0.175)
+    assert pos == pytest.approx(0.175 - 0.02)
+    assert fake.grip_effort_base == pytest.approx(-0.5)

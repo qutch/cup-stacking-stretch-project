@@ -39,6 +39,8 @@
     grasp_open_margin: 0.015
     gripper_squeeze: 0.05
     gripper_max_effort: 0.0   # the sim reports no gripper effort
+    gripper_effort_rise: 0.0  # the sim reports no gripper effort
+    gripper_step: 0.05
     grasp_check_lift: 0.08      # > grasp point to cup top
     grasp_slip_tol: 0.01
     carry_clearance: 0.05
