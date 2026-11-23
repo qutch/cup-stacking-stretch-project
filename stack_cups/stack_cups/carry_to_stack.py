@@ -12,11 +12,14 @@ sim/handoff_cup.py stands in for task 1's pick-up). Phases (each logged as it st
   5. SQUARE    - (2.6) turn in place until the base is parallel to the tape's edge; if the
                  taped area's center is not about reach_target of arm extension away
                  (Nav2 stops up to ~25 cm off), sidestep and square up again
-  6. ALIGN     - (2.6) drive along the table until the cup lines up with the taped area's
-                 center, measuring the tape fresh (stopped, head on it) before each drive
+  6. ALIGN     - (2.6) drive along the table until the cup is within the wrist yaw's reach
+                 of the line through the taped area's center, then turn the wrist to put
+                 it on the line (find_cup's align_arm), measuring the tape fresh (stopped,
+                 head on it) before each drive and after the turn
   7. DONE / FAILED / STOPPED; exit code 0 only on DONE
 The robot ends where task 4 places from: the cup on the line through the area's center
-that the arm reaches along, the base parallel to the tape, the cup still in the carry pose.
+that the arm reaches along, the base parallel to the tape, the cup still in the carry pose
+except for the wrist yaw (at most max_yaw, the cup still upright).
 
 Needs Nav2 for LOCALIZE and NAVIGATE (in the sim: ros2 launch stack_cups sim_nav.launch.py).
 Parameters: stack_cups/params.py (CARRY), set per platform in config/sim.yaml and robot.yaml.
@@ -328,11 +331,15 @@ class CarryToStack(CupRobot):
         return ext
 
     def align(self, offs):
+        """Returns the grasp offsets after aligning (they change when the wrist turns)."""
         self.set_phase("ALIGN", "driving along the table until the cup lines up with the "
                                 "tape's center")
-        cfg = dict(self.cfg, use_wrist_yaw=False)  # base only: the cup stays in the carry pose
-        align_arm(self, self.tape_fresh, offs, cfg, key="tape",
-                  why_lost=lambda: self.camera.last_miss)
+        # Like find_cup: the base gets within the wrist yaw's reach and the wrist covers the
+        # last few cm. Base drives alone did not settle: at the sim's full base speed, short
+        # drives ended 1-3 cm from their target and 3 drives were not enough (2 of 2 runs).
+        # The wrist turns about a vertical axis, so the cup stays upright.
+        return align_arm(self, self.tape_fresh, offs, self.cfg, key="tape",
+                         why_lost=lambda: self.camera.last_miss)
 
     def run(self):
         """Returns True on DONE."""
@@ -362,7 +369,7 @@ class CarryToStack(CupRobot):
             if self.step("align", "drive along the table until the cup lines up with the "
                                   "tape's center"):
                 self.check_reach(m or self.find_tape(offs), offs)
-                self.align(offs)
+                offs = self.align(offs)
             if self.steps & {"find_tape", "square", "align"}:
                 m = self.tape_fresh()
                 if m is None:

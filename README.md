@@ -385,8 +385,11 @@ Phases (each logged as it starts):
    up to ~25 cm off, also sideways, so if the area's center is not about `reach_target` of
    arm extension away, the base sidesteps (turn 90°, drive, turn back) and squares up
    again. The cup swings through a quarter circle behind the base on the arm side.
-6. **ALIGN** (2.6): drive along the table until the cup lines up with the area's center,
-   measuring the tape fresh (stopped, head pointed at it) before each drive.
+6. **ALIGN** (2.6): drive along the table until the cup is within the wrist yaw's reach of
+   the line through the area's center, then turn the wrist to put it on the line (as
+   `find_cup` lines up with a cup), measuring the tape fresh (stopped, head pointed at it)
+   before each drive and after the turn. The wrist turns about a vertical axis, so the cup
+   stays upright; it ends turned at most `max_yaw`.
 
 Then `[DONE]` with how far the cup is from the center's line and the arm extension that
 reaches the center (exit code 0 only on DONE). Stops (Ctrl+C, `/stack_cups/stop`, the
@@ -395,8 +398,9 @@ cup: the driver's `/stop_the_robot` would relax it, so it is not called while ho
 
 Parameters (`params.CARRY`, in `config/sim.yaml` and `robot.yaml`; `carry_steps`,
 `step_confirm` and `require_cup` can also be given to the launch file). The base moves,
-turns, measuring, tape colour and Nav2 time limit use `find_cup`'s values (`v_max`,
-`w_max`, `align_tol`, `samples`, `tape_hue_min`, `nav_timeout`, ...).
+turns, wrist yaw, measuring, tape colour and Nav2 time limit use `find_cup`'s values
+(`v_max`, `w_max`, `align_tol`, `use_wrist_yaw`, `max_yaw`, `samples`, `tape_hue_min`,
+`nav_timeout`, ...).
 
 | Parameter | Sim | Meaning |
 |---|---|---|
@@ -411,14 +415,16 @@ turns, measuring, tape colour and Nav2 time limit use `find_cup`'s values (`v_ma
 | `reach_target`, `reach_tol` | `0.31`, `0.12` m | Arm extension that should reach the area's center from where the robot parks; sidestep if it is off by more than `reach_tol` |
 | `max_reach` | `0.5` m | Most arm extension the area's center may need in the end |
 
-In the sim, every run that started with a cup in the gripper parked with the cup within
-0.5 cm of the line through the taped area's center and the base within 0.7° of the tape's
-edge, still holding the cup (by `sim/carry_check.py`, against the scene; 7 runs of this
-version: 3 normal starts, a start turned 90° away, a goal 20 cm too far from the table, and
-2 forced sidesteps). Nav2 stops about 25 cm short; the camera does the rest. A run takes
-about 70 s, about 110 s with a sidestep. Opening the gripper while Nav2 drove stopped the
-robot at once (`[FAILED] lost the cup while driving`), and `/stack_cups/stop` stopped it with
-the cup still held.
+In the sim (by `sim/carry_check.py`, against the scene), with task 1 merged (the sim base at
+its full speed, ALIGN finishing with the wrist): 2 of 2 normal starts parked with the cup
+within 0.5 cm of the line through the taped area's center and the base within 0.7° of the
+tape's edge, still holding the cup, in 26-31 s. Before the merge (the sim base at a third of
+the commanded speed, ALIGN by base drives only), all 7 runs did: 3 normal starts, a start
+turned 90° away, a goal 20 cm too far from the table, and 2 forced sidesteps (70 s, 110 s
+with a sidestep); opening the gripper while Nav2 drove stopped the robot at once
+(`[FAILED] lost the cup while driving`), and `/stack_cups/stop` stopped it with the cup still
+held. Nav2 stops about 25 cm short; the camera does the rest. After the merge, base drives
+alone ended 1-3 cm off and ALIGN failed in 2 of 2 runs, hence the wrist.
 
 On the real robot: measure `start_pose` and `stacking_pose` on the WVH map (drive there and
 read `ros2 run tf2_ros tf2_echo map base_link`), set `poses_checked: true`, and check the
