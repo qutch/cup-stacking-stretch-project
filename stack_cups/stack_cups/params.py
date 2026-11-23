@@ -99,7 +99,12 @@ CARRY = {
     "w_max": 1.0,  # rad/s, base turn rate far from the target heading
     "w_min": 0.3,  # rad/s, slowest turn command that still turns the base
     "w_decel": 0.5,  # rad/s^2, how hard turns slow down near the target heading
-    "max_reach": 0.5,  # m, most arm extension the tape's center may need from the parking spot
+    # Arm extension that should reach the tape's center from where the robot parks (m).
+    # Nav2 stops up to ~25 cm off, so if the extension needed is more than reach_tol from
+    # reach_target, the base sidesteps (turn 90 deg, drive, turn back) to fix it first.
+    "reach_target": 0.31,
+    "reach_tol": 0.12,
+    "max_reach": 0.5,  # m, most arm extension the tape's center may need in the end
 }
 
 ALL = {**ROBOT, **CUP, **FIND_CUP, **CARRY}

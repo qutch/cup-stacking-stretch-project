@@ -72,4 +72,6 @@
     w_max: 0.3
     w_min: 0.1                # verify on the robot: slowest command that still turns the base
     w_decel: 0.3
+    reach_target: 0.31
+    reach_tol: 0.12
     max_reach: 0.5

@@ -9,7 +9,9 @@ sim/handoff_cup.py stands in for task 1's pick-up). Phases (each logged as it st
   3. NAVIGATE  - (2.3-2.5) Nav2 to stacking_pose, with an outline that includes the arm and
                  the cup; stops at once if the grip changes (the cup slipped or fell)
   4. FIND_TAPE - (2.1) point the head where the tape should be and find it
-  5. SQUARE    - (2.6) turn in place until the base is parallel to the tape's edge
+  5. SQUARE    - (2.6) turn in place until the base is parallel to the tape's edge; if the
+                 taped area's center is not about reach_target of arm extension away
+                 (Nav2 stops up to ~25 cm off), sidestep and square up again
   6. ALIGN     - (2.6) drive along the table until the cup lines up with the taped area's
                  center, measuring the tape fresh (stopped, head on it) before each drive
   7. DONE / FAILED / STOPPED; exit code 0 only on DONE
@@ -276,6 +278,42 @@ class CarryToStack(CupRobot):
         raise RuntimeError(f"still {deg(m['yaw']):+.1f} deg off the tape's edge after "
                            f"{int(c['max_turns'])} turns")
 
+    def sidestep(self, dist):
+        """Move the base `dist` meters toward its arm side (-y; negative: away from it)
+        and keep its heading: a differential-drive base cannot move sideways, so turn 90
+        degrees, drive, and turn back. The cup swings through a quarter circle behind the
+        base on the arm side."""
+        c = self.cfg
+        turn = dict(w_max=c["w_max"], w_min=c["w_min"], decel=c["w_decel"],
+                    tol=c["square_tol"] / 4.0)
+        heading = self.odom_pose()[2]
+        self.turn_by(-math.pi / 2.0, **turn)
+        self.check_cup("while turning")
+        moved = self.drive_by(dist, v_max=c["v_max"], v_min=c["v_min"], decel=c["decel"],
+                              tol=c["drive_tol"])
+        self.check_cup("while sidestepping")
+        self.turn_by(C.wrap(heading - self.odom_pose()[2]), **turn)
+        self.check_cup("while turning")
+        return moved
+
+    def fix_reach(self, m, offs):
+        """Sidestep if the tape's center is not about reach_target of arm extension away.
+        Returns the tape measured afterwards (or m) and whether the base moved."""
+        c = self.cfg
+        ext = C.reach_for(m["tape"][1], offs["c"])
+        off = ext - c["reach_target"]
+        if abs(off) <= c["reach_tol"]:
+            return m, False
+        self.log(f"[SQUARE] the tape's center needs {ext:.2f} m of arm extension (want "
+                 f"{c['reach_target']:.2f} +/- {c['reach_tol']:.2f}): sidestepping "
+                 f"{off * 100:+.0f} cm")
+        moved = self.sidestep(off)
+        self.log(f"[SQUARE] sidestepped {moved * 100:+.1f} cm")
+        m = self.tape_fresh()
+        if m is None:
+            raise RuntimeError(f"lost the tape after sidestepping: {self.camera.last_miss}")
+        return m, True
+
     def check_reach(self, m, offs):
         """The arm extension the taped area's center needs; raises if it is out of reach."""
         ext = C.reach_for(m["tape"][1], offs["c"])
@@ -311,8 +349,12 @@ class CarryToStack(CupRobot):
             m = None
             if self.step("find_tape", "point the head at the stacking area and find the tape"):
                 m = self.find_tape(offs)
-            if self.step("square", "turn in place until the base is parallel to the tape"):
+            if self.step("square", "turn in place until the base is parallel to the tape, "
+                                   "and sidestep if the tape is not at a comfortable reach"):
                 m = self.square(m or self.find_tape(offs), offs)
+                m, moved = self.fix_reach(m, offs)
+                if moved:
+                    m = self.square(m, offs)
             if self.step("align", "drive along the table until the cup lines up with the "
                                   "tape's center"):
                 self.check_reach(m or self.find_tape(offs), offs)
