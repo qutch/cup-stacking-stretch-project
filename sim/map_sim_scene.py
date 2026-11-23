@@ -19,6 +19,7 @@ import rclpy
 from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 
 ROUTE = [(2.0, 0.0), (2.0, -1.85), (-1.2, -1.85), (-1.2, 0.0), (0.0, 0.0)]
@@ -33,7 +34,10 @@ class Driver(Node):
     def __init__(self):
         super().__init__("map_sim_scene")
         self.pose = None
+        self.joints = {}
         self.create_subscription(Odometry, "/odom", self._on_odom, 10)
+        self.create_subscription(JointState, "/stretch/joint_states",
+                                 lambda m: self.joints.update(zip(m.name, m.position)), 10)
         self.pub = self.create_publisher(Twist, "/stretch/cmd_vel", 10)
 
     def _on_odom(self, m):
@@ -50,6 +54,23 @@ class Driver(Node):
         end = time.time() + s
         while time.time() < end:
             rclpy.spin_once(self, timeout_sec=0.02)
+
+    def stow(self):
+        """Tuck the arm in (lift down, gripper over the base). In the sim's start pose the
+        gripper sticks out 0.5 m on the arm side, just under the table top, and catches the
+        table legs."""
+        cli = self.create_client(Trigger, "/stow_the_robot")
+        cli.wait_for_service(timeout_sec=10.0)
+        rclpy.spin_until_future_complete(self, cli.call_async(Trigger.Request()),
+                                         timeout_sec=10.0)
+        end = time.time() + 30.0
+        while time.time() < end:
+            self.spin_for(0.2)
+            if self.joints.get("joint_lift", 1.0) < 0.3 and \
+                    self.joints.get("joint_wrist_yaw", 0.0) > 3.0:
+                self.spin_for(1.0)  # let it settle
+                return True
+        return False
 
     def turn_to(self, heading, tol=0.03):
         while True:
@@ -95,6 +116,9 @@ def main():
     nav = d.create_client(Trigger, "/switch_to_navigation_mode")
     nav.wait_for_service(timeout_sec=10.0)
     rclpy.spin_until_future_complete(d, nav.call_async(Trigger.Request()), timeout_sec=10.0)
+    print("stowing the arm", flush=True)
+    if not d.stow():
+        print("WARNING: the arm did not stow; the gripper may catch the table", flush=True)
     while d.pose is None:
         d.spin_for(0.1)
     t0 = time.time()
