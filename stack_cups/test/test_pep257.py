@@ -16,8 +16,13 @@ from ament_pep257.main import main
 import pytest
 
 
+# The project's docstring style: a summary that may run over several lines, and no rule
+# about how the first line ends (roadmap 0.5). Docstrings are still checked otherwise.
+RELAXED = ['D205', 'D209', 'D213', 'D400', 'D401', 'D403', 'D415']
+
+
 @pytest.mark.linter
 @pytest.mark.pep257
 def test_pep257():
-    rc = main(argv=['.', 'test'])
+    rc = main(argv=['.', 'test', '--add-ignore'] + RELAXED)
     assert rc == 0, 'Found code style errors / warnings'

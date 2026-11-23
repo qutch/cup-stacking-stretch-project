@@ -1,0 +1,51 @@
+# stack_cups parameters for the Stretch MuJoCo sim (roadmap 0.2).
+#   ros2 launch stack_cups find_cup.launch.py config:=sim
+#   ros2 run stack_cups find_cup --ros-args --params-file $(ros2 pkg prefix --share stack_cups)/config/sim.yaml
+# Every parameter is set here and in robot.yaml (test_config.py checks they match
+# stack_cups/params.py). Values marked "sim only" are workarounds the real robot must not use.
+/**:
+  ros__parameters:
+    # ---------------------------------------------------------------- cups
+    # Placeholder until the real cups are measured: a typical 16 oz party cup.
+    # The sim scene (ros2 launch stack_cups sim.launch.py) builds its cups from these too.
+    cup_height: 0.12
+    cup_rim_diameter: 0.095
+    cup_base_diameter: 0.06
+    cup_wall: 0.003
+    cup_mass: 0.02
+
+    # ---------------------------------------------------------------- robot layer
+    odom_topic: /odom
+    joint_tries: 5            # sim only: the unpatched sim accepts a joint within 5 cm
+    aborted_ok_tol: 0.05      # sim only: the unpatched sim aborts every goal, no message
+    max_base_speed: 0.3
+    max_joint_speed_m: 0.0    # the sim ignores joint speeds
+    max_joint_speed_rad: 0.0
+    step_confirm: false
+
+    # ---------------------------------------------------------------- find_cup
+    steps: all
+    aim_head: true
+    head_pan: -1.57
+    head_tilt: -0.6
+    grasp: false
+    show_windows: true
+    gripper_open: 0.3         # fingertips ~12 cm apart: clears a 9.5 cm rim
+    gripper_closed: -0.1
+    ready_above_cup: 0.25
+    v_max: 0.15
+    v_min: 0.06               # sim only: the sim's wheel friction stalls slower commands
+    decel: 0.1
+    drive_tol: 0.003
+    align_tol: 0.008
+    max_drives: 3
+    settle_s: 0.3             # sim only: a new image every 0.1 s of sim time (3 renders)
+    sample_dt: 0.1            # sim only: one sim render
+    samples: 5
+    max_spread: 0.01
+    grasp_height: -1.0
+    use_wrist_yaw: true
+    max_yaw: 0.25
+    arm_len: 0.270
+    yaw_sign: 1.0
+    yaw_check_tol: 0.010

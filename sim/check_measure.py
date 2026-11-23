@@ -19,7 +19,7 @@ def main():
         n.wait_for_data()
         print(f"clock: {'sim' if n.get_parameter('use_sim_time').value else 'wall'} time",
               flush=True)
-        _, depth = n.latest()
+        _, depth = n.camera.latest()
         print("depth frame:", depth[1], flush=True)
         print("TF base<-depth:", n.lookup("base_link", depth[1]), flush=True)
         for i in range(3):
@@ -29,7 +29,7 @@ def main():
             time.sleep(0.5)
         m = n.measure_fresh()
         print("measure_fresh:", None if m is None else (m["cup"], m["spread"]),
-              "| misses:", n.last_miss, flush=True)
+              "| misses:", n.camera.last_miss, flush=True)
     finally:
         n.destroy_node()
         rclpy.try_shutdown()
