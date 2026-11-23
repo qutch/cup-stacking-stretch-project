@@ -11,11 +11,11 @@ Conventions:
 import cv2
 import numpy as np
 
-# Same HSV red thresholds the original find_cup node used
-RED_RANGES = (
-    ((0, 120, 70), (10, 255, 255)),
-    ((170, 120, 70), (180, 255, 255)),
-)
+# HSV thresholds (OpenCV hue 0-179). Red wraps around hue 0: hue <= width or >= 180 -
+# width. These defaults are the original find_cup node's; params.py makes them settable.
+RED = {"hue_width": 10, "sat_min": 120, "val_min": 70}
+# The tape around the stacking area (blue in the sim)
+TAPE = {"hue_min": 95, "hue_max": 130, "sat_min": 120, "val_min": 60}
 MIN_AREA = 100
 
 MIN_DEPTH = 0.1
@@ -31,13 +31,20 @@ def depth_in_meters(depth, encoding):
     return d.astype(np.float32)
 
 
-def red_mask(bgr):
+def _in_range(hsv, lo, hi):
+    return cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
+
+
+def red_mask(bgr, hue_width=RED["hue_width"], sat_min=RED["sat_min"], val_min=RED["val_min"]):
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    mask = None
-    for lo, hi in RED_RANGES:
-        m = cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
-        mask = m if mask is None else cv2.bitwise_or(mask, m)
-    return mask
+    return cv2.bitwise_or(_in_range(hsv, (0, sat_min, val_min), (hue_width, 255, 255)),
+                          _in_range(hsv, (180 - hue_width, sat_min, val_min), (180, 255, 255)))
+
+
+def tape_mask(bgr, hue_min=TAPE["hue_min"], hue_max=TAPE["hue_max"], sat_min=TAPE["sat_min"],
+              val_min=TAPE["val_min"]):
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    return _in_range(hsv, (hue_min, sat_min, val_min), (hue_max, 255, 255))
 
 
 def find_red_blob(bgr, min_area=MIN_AREA):
@@ -100,18 +107,29 @@ def locate_cup(depth, K_depth, R, t, mask, K_color, R_cd, t_cd, bbox, pad=15):
     center. Returns (center_xyz, radius) or (None, None).
     """
     x, y, w, h = bbox
-    pts = backproject(depth, K_depth, region=(x - pad, y - pad, w + 2 * pad, h + 2 * pad))
-    if len(pts) < 10:
+    pts, _ = points_on_mask(depth, K_depth, mask, K_color, R_cd, t_cd,
+                            region=(x - pad, y - pad, w + 2 * pad, h + 2 * pad))
+    if len(pts) < 8:
         return None, None
+    return cup_from_points(to_base(pts, R, t), t)
+
+
+def points_on_mask(depth, K_depth, mask, K_color, R_cd, t_cd, step=1, region=None):
+    """Depth points (depth optical frame) that land on nonzero pixels of `mask` (a color
+    image mask) once moved into the color camera's frame, and their color pixels (u, v)."""
+    pts = backproject(depth, K_depth, step=step, region=region)
+    if len(pts) == 0:
+        return pts, np.zeros((0, 2), int)
     uv = np.round(project(to_base(pts, R_cd, t_cd), K_color)).astype(int)
     H, W = mask.shape[:2]
     inside = (uv[:, 0] >= 0) & (uv[:, 0] < W) & (uv[:, 1] >= 0) & (uv[:, 1] < H)
-    on_red = np.zeros(len(pts), bool)
-    on_red[inside] = mask[uv[inside, 1], uv[inside, 0]] > 0
-    pts = pts[on_red]
-    if len(pts) < 8:
-        return None, None
-    base_pts = to_base(pts, R, t)
+    keep = np.zeros(len(pts), bool)
+    keep[inside] = mask[uv[inside, 1], uv[inside, 0]] > 0
+    return pts[keep], uv[keep]
+
+
+def cup_from_points(base_pts, t):
+    """(center, radius) of a cup from its visible red points in base_link (camera at t)."""
     # Radius from the cup's horizontal extent seen across the image
     horiz = base_pts[:, :2] - base_pts[:, :2].mean(axis=0)
     cam_dir = base_pts[:, :2].mean(axis=0) - np.asarray(t, dtype=float)[:2]
@@ -193,7 +211,142 @@ def plan_reach(cup, cup_radius, table_top, edge_dist, offsets, *,
     return {"lift": lift, "extension": ext, "grasp_z": grasp_z}, None
 
 
-def measure_cup(img, depth, K_color, K_depth, T_base, T_cd, full=True):
+def split_cups(pts, cam_xy, bin_m=0.01, min_rise=0.015, gap=0.03, min_pts=8,
+               min_height=0.03):
+    """Split one red blob's points (base_link) into one group per cup.
+
+    Seen from the camera, each cup's front surface is an arc: nearest at the cup's middle,
+    farther toward its sides. Across the image (perpendicular to the view direction) the
+    front-surface distance of two cups standing side by side has two dips with a bump of
+    about a radius where they touch; split at bumps more than `min_rise` above the line
+    joining the two dips (seen at an angle, one cup is farther than the other). Also
+    split where the points jump more than `gap` along the view (a cup seen above or
+    behind another) or across it (two blobs the image joined). Groups under `min_pts`
+    points or less than `min_height` tall are dropped: red-edged pixels can carry the
+    depth of the table behind a cup, and those points are flat. Limit: a cup hidden
+    straight behind another is not separated."""
+    if len(pts) < min_pts:
+        return []
+    cam_xy = np.asarray(cam_xy, float)[:2]
+    view = pts[:, :2].mean(axis=0) - cam_xy
+    view /= max(np.linalg.norm(view), 1e-6)
+    rel = pts[:, :2] - cam_xy
+    along = rel @ view
+    across = rel @ np.array([-view[1], view[0]])
+    out = []
+
+    def by_gaps(idx, values):
+        order = idx[np.argsort(values[idx])]
+        cuts = np.where(np.diff(values[order]) > gap)[0] + 1
+        return np.split(order, cuts)
+
+    def by_bumps(idx):
+        lo = across[idx].min()
+        b = ((across[idx] - lo) / bin_m).astype(int)
+        nb = b.max() + 1
+        front = np.full(nb, np.inf)
+        np.minimum.at(front, b, along[idx])
+        if nb >= 5:
+            best, cut = min_rise, None
+            for i in range(2, nb - 2):
+                li = int(np.argmin(front[:i]))
+                ri = i + 1 + int(np.argmin(front[i + 1:]))
+                if not (np.isfinite(front[i]) and np.isfinite(front[li])
+                        and np.isfinite(front[ri])):
+                    continue
+                chord = front[li] + (front[ri] - front[li]) * (i - li) / (ri - li)
+                rise = front[i] - chord
+                if rise > best:
+                    best, cut = rise, i
+            if cut is not None:
+                return by_bumps(idx[b < cut]) + by_bumps(idx[b >= cut])
+        return [idx]
+
+    for g in by_gaps(np.arange(len(pts)), along):
+        for h in by_gaps(g, across):
+            for k in by_bumps(h):
+                z = pts[k, 2]
+                if len(k) >= min_pts and np.percentile(z, 95) - np.percentile(z, 5) >= min_height:
+                    out.append(k)
+    return [pts[k] for k in out]
+
+
+def tape_area(depth, K_depth, img, K_color, T_base, T_cd, opts=None, min_pts=30):
+    """The taped stacking area as a convex polygon (Nx2 float32, base_link xy), or None
+    when too little tape is in view."""
+    mask = tape_mask(img, **(opts or {}))
+    if np.count_nonzero(mask) < MIN_AREA:
+        return None
+    pts, _ = points_on_mask(depth, K_depth, mask, K_color, *T_cd, step=2)
+    if len(pts) < min_pts:
+        return None
+    xy = to_base(pts, *T_base)[:, :2].astype(np.float32)
+    hull = cv2.convexHull(xy).reshape(-1, 2)
+    return hull if len(hull) >= 3 and cv2.contourArea(hull) > 1e-3 else None
+
+
+def in_area(xy, area):
+    return area is not None and cv2.pointPolygonTest(
+        area.reshape(-1, 1, 2), (float(xy[0]), float(xy[1])), False) >= 0
+
+
+def find_cups(img, depth, K_color, K_depth, T_base, T_cd, red=None, min_area=MIN_AREA,
+              split=None):
+    """Every red cup in view: a list of dicts with cup (center xyz, base_link), radius,
+    bbox (in the color image) and n (points). Also returns the red mask."""
+    mask = red_mask(img, **(red or {}))
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    R, t = T_base
+    cups = []
+    for k in range(1, n):
+        x, y, w, h, area = stats[k]
+        if area <= min_area:
+            continue
+        pad = 15
+        blob = (labels == k).astype(np.uint8)
+        region = (x - pad, y - pad, w + 2 * pad, h + 2 * pad)
+        pts, _ = points_on_mask(depth, K_depth, blob, K_color, *T_cd, region=region)
+        if len(pts) < 8:
+            continue
+        base = to_base(pts, R, t)
+        for group in split_cups(base, t, **(split or {})):
+            center, radius = cup_from_points(group, t)
+            g_uv = np.round(project(_base_to_color(group, R, t, T_cd), K_color)).astype(int)
+            gx, gy = g_uv.min(axis=0)
+            gw, gh = g_uv.max(axis=0) - (gx, gy) + 1
+            cups.append({"cup": center, "radius": radius, "n": len(group),
+                         "bbox": (int(gx), int(gy), int(gw), int(gh))})
+    return cups, mask
+
+
+def _base_to_color(pts_base, R, t, T_cd):
+    """base_link points -> color optical frame (inverse of depth->base, then depth->color)."""
+    depth_opt = (np.asarray(pts_base) - t) @ R
+    return to_base(depth_opt, *T_cd)
+
+
+def choose_cup(cups, area=None, target=None, track_radius=0.08):
+    """The cup to pick: not inside the tape `area`; the one nearest `target` (xy in
+    base_link, its last position) if given, else the one closest to the robot.
+    Returns (cup or None, why)."""
+    loose = [c for c in cups if not in_area(c["cup"][:2], area)]
+    placed = len(cups) - len(loose)
+    note = f" ({placed} inside the tape)" if placed else ""
+    if not loose:
+        return None, (f"no loose cup: all {len(cups)} red cups are inside the tape" if cups
+                      else "no red cup found")
+    if target is not None:
+        d = [np.hypot(*(c["cup"][:2] - target[:2])) for c in loose]
+        i = int(np.argmin(d))
+        if d[i] > track_radius:
+            return None, (f"lost the target cup: the nearest loose cup is {d[i] * 100:.0f} cm "
+                          f"from where it was{note}")
+        return loose[i], None
+    return min(loose, key=lambda c: np.hypot(*c["cup"][:2])), None
+
+
+def measure_cup(img, depth, K_color, K_depth, T_base, T_cd, full=True, target=None,
+                opts=None):
     """One cup measurement from one color + depth frame pair.
 
     T_base: (R, t) depth optical frame -> base_link; T_cd: depth optical -> color optical.
@@ -201,17 +354,25 @@ def measure_cup(img, depth, K_color, K_depth, T_base, T_cd, full=True):
     radius when the cup was found, and with `full` also table_top and edge (see
     estimate_table_top and table_edge_distance). If the cup was not found, "why" says
     why."""
-    bbox, mask = find_red_blob(img)
-    out = {"img": img, "mask": mask, "bbox": bbox}
-    if bbox is None:
-        out["why"] = f"no red blob in the image ({int(np.count_nonzero(mask))} red pixels)"
-        return out
+    o = opts or {}
     R, t = T_base
-    cup, radius = locate_cup(depth, K_depth, R, t, mask, K_color, T_cd[0], T_cd[1], bbox)
-    if cup is None:
-        out["why"] = f"red blob at {bbox} but too few depth points on it"
+    cups, mask = find_cups(img, depth, K_color, K_depth, T_base, T_cd, red=o.get("red"),
+                           min_area=o.get("min_area", MIN_AREA), split=o.get("split"))
+    out = {"img": img, "mask": mask, "bbox": None, "cups": cups}
+    if not cups:
+        red = int(np.count_nonzero(mask))
+        out["why"] = (f"no red blob in the image ({red} red pixels)" if red <= o.get(
+            "min_area", MIN_AREA) else f"red pixels ({red}) but too few depth points on them")
         return out
-    out.update(cup=cup, radius=radius)
+    area = (tape_area(depth, K_depth, img, K_color, T_base, T_cd, o.get("tape"))
+            if o.get("ignore_taped", True) else None)
+    chosen, why = choose_cup(cups, area, target, o.get("track_radius", 0.08))
+    out["tape_area"] = area
+    if chosen is None:
+        out["why"] = why
+        return out
+    cup, radius = chosen["cup"], chosen["radius"]
+    out.update(cup=cup, radius=radius, bbox=chosen["bbox"])
     if full:
         pts = to_base(backproject(depth, K_depth, step=2), R, t)
         top = estimate_table_top(pts, cup, radius)

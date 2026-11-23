@@ -42,6 +42,8 @@ LOOSE_CUPS = [(-0.30, -0.66), (-0.05, -0.80), (0.18, -0.67), (0.42, -0.79), (0.6
               (0.20, -1.12)]
 # cups:=single: one loose cup on the near side (for grasp tests without other cups)
 SINGLE_CUP = LOOSE_CUPS[2]
+# cups:=touching: two loose cups standing rim to rim (roadmap 1.1: split them by depth)
+# cups:=mixed: three loose cups, plus three already placed in the tape (the pyramid's base)
 ROOM = {"x0": -2.0, "x1": 3.0, "y0": -2.6, "y1": 1.4, "height": 0.5, "thickness": 0.05}
 # Asymmetric furniture so a 2D lidar map has features (an empty box room is symmetric)
 FURNITURE = [  # (x, y, half sizes)
@@ -205,7 +207,8 @@ def _add_cup(world, name, pos, flipped, cup, mesh):
 def build_spec(cups="upright", seed=None, cup=None):
     """MjSpec of the Stretch robot plus the task scene. cups: "upright" (loose cups on
     the table), "pyramid" (a finished flipped 3-2-1 pyramid inside the tape) or
-    "single" (one loose cup, for grasp tests)."""
+    "single" (one loose cup, for grasp tests), "touching" (two loose cups rim to rim) or
+    "mixed" (three loose cups and the pyramid's base row placed in the tape)."""
     import mujoco
     from stretch_mujoco.utils import default_robot_xml_path
 
@@ -278,14 +281,21 @@ def build_spec(cups="upright", seed=None, cup=None):
     mesh.uservert = [c for v in verts for c in v]
     mesh.userface = [i for t in tris for i in t]
     top = tb["height"]
-    if cups == "pyramid":
+    if cups in ("pyramid", "mixed"):
         spots = pyramid_spots(mx, my, top, cup["cup_height"], cup["cup_rim_diameter"])
+        if cups == "mixed":
+            spots = spots[:3]
+            for i, (x, y) in enumerate(LOOSE_CUPS[:3]):
+                _add_cup(world, f"cup{3 + i}", (x, y, top + 0.002), False, cup, mesh.name)
         for i, p in enumerate(spots):
             _add_cup(world, f"cup{i}", (p[0], p[1], p[2] + 0.002 * (1 + i // 3)), True, cup,
                      mesh.name)
     else:
         if cups == "single":
             xy = [SINGLE_CUP]
+        elif cups == "touching":
+            x, y = SINGLE_CUP
+            xy = [(x, y), (x + cup["cup_rim_diameter"] + 0.001, y)]
         else:
             xy = LOOSE_CUPS if seed is None else random_loose_cups(seed)
         for i, (x, y) in enumerate(xy):
@@ -337,7 +347,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", help="write the scene MJCF here")
-    ap.add_argument("--cups", choices=["upright", "pyramid", "single"], default="upright")
+    ap.add_argument("--cups", default="upright",
+                    choices=["upright", "pyramid", "single", "touching", "mixed"])
     ap.add_argument("--seed", type=int, help="random loose-cup layout (default: fixed layout)")
     ap.add_argument("--check", action="store_true", help="simulate 3 s and report each cup")
     args = ap.parse_args()

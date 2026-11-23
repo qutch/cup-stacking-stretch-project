@@ -65,6 +65,24 @@ FIND_CUP = {
     # base center, outside Nav2's 0.22 m robot_radius (roadmap 2.4).
     "carry_wrist_yaw": 0.0,
     "grasp_tries": 3,  # attempts before giving up; a failed one opens and backs off first
+    # --- finding the cup (roadmap 1.1); perception.py has the method
+    # HSV red thresholds (OpenCV hue 0-179): hue <= width or >= 180 - width. Tune on the
+    # robot with show_windows (the "mask" window shows what counts as red).
+    "red_hue_width": 10,
+    "red_sat_min": 120,
+    "red_val_min": 70,
+    "red_min_area": 100,  # px, smaller red blobs are noise
+    # Skip red cups standing inside the taped stacking area (already placed)
+    "ignore_taped": True,
+    "tape_hue_min": 95,  # tape colour (HSV); the sim's tape is blue
+    "tape_hue_max": 130,
+    "tape_sat_min": 120,
+    "tape_val_min": 60,
+    # m, after the first measurement keep the cup nearest its last position (in odom);
+    # none within this = lost
+    "track_radius": 0.08,
+    # m, split a red blob where the front surface bulges back this much between two cups
+    "split_min_rise": 0.015,
     # m, grasp point height above the cup's center while driving (arm retracted, so not
     # over the table). Keep it low: at 0.25 m the raised gripper sat between the head
     # camera and a cup on a 74 cm table, so ALIGN lost the cup after the first drive.

@@ -128,9 +128,11 @@ ros2 launch stack_cups find_cup.launch.py config:=sim step_confirm:=true      # 
 `config:=` is `sim`, `robot`, or the path of a parameter file. `ros2 run stack_cups find_cup`
 also works and uses the sim values. It exits when it is done: exit code 0 after `[DONE]`,
 1 after `[FAILED]` or `[STOPPED]` (with `show_windows:=true` it waits for Ctrl+C first).
-It works in the task scene (`[DONE] holding the cup` with 6 cups) and with one cup
-(`sim.launch.py cups:=single`, for grasp tests). It still goes for the biggest red blob,
-not the closest loose cup (roadmap 1.1).
+With `grasp:=true` it ends `[DONE] carrying the cup` in the task scene. It picks the
+closest loose cup, skips red cups inside the tape, splits cups that touch, and then keeps
+to the same cup (roadmap 1.1). Test scenes: `sim.launch.py cups:=single` (one cup),
+`cups:=touching` (two cups rim to rim), `cups:=mixed` (three loose, three placed in the
+tape), `cups:=pyramid` (all placed: find_cup fails with "all ... inside the tape").
 
 Main parameters. `grasp`, `steps`, `step_confirm` and `show_windows` can be given to
 `find_cup.launch.py` as `name:=value`; `ros2 run stack_cups find_cup --ros-args -p name:=value`
@@ -499,14 +501,20 @@ which also sizes the sim's cups).
 
 **Owner:** Hutch
 
-- [ ] **1.1 Detect loose cups** (partial: red detection works)
-  - Make the red thresholds parameters and tune them for real lighting.
-  - Ignore red cups inside the taped area (already placed).
-  - Use depth to separate cups that touch.
-  - Pick the closest loose cup, not the biggest red blob.
-  - [x] Keep the target in view through ALIGN: the raised gripper hid it on the 74 cm
-    table (`ready_above_cup` 0.25 -> 0.05 m). Still to do: track it by position (the one
-    nearest its last position) in case something else hides it.
+- [x] **1.1 Detect loose cups** (`perception.find_cups` / `choose_cup`)
+  - [x] Red thresholds are parameters (`red_hue_width`, `red_sat_min`, `red_val_min`,
+    `red_min_area`).
+  - [ ] Tune them, and the `tape_*` colour, on the robot in the lab's light
+    (`show_windows` shows the mask).
+  - [x] Ignore red cups inside the taped area: the tape's points form a polygon on the
+    table; cups whose center is inside are placed (`ignore_taped`).
+  - [x] Separate touching cups by depth: split a blob where its front surface bulges back
+    between two cups (`split_min_rise`). Flat red points (table depth at blob edges) are
+    not cups. Limit: a cup hidden straight behind another is not separated.
+  - [x] Pick the closest loose cup, not the biggest red blob.
+  - [x] Keep the target: the raised gripper hid it on the 74 cm table (`ready_above_cup`
+    0.25 -> 0.05 m), and after the first measurement each attempt keeps the cup nearest
+    its last position in odom (`track_radius`), so another cup cannot take its place.
 - [ ] **1.2 Search when no cup is in view**: pan the head, or turn and drive.
 - [ ] **1.3 Drive to the cup's general area** (partial: Nav2 from the starter package)
   - Save a pose near the cup table in the map frame and drive there with

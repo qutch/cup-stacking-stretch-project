@@ -123,7 +123,8 @@ def test_single_scene_has_one_loose_cup():
     assert "cup0" in names and "cup1" not in names
 
 
-@pytest.mark.parametrize("cups,n", [("upright", 6), ("pyramid", 6), ("single", 1)])
+@pytest.mark.parametrize("cups,n", [("upright", 6), ("pyramid", 6), ("single", 1),
+                                    ("touching", 2), ("mixed", 6)])
 def test_cups_stay_put(cups, n):
     rows = S.check(S.build_spec(cups).compile(), seconds=2.0)
     assert len(rows) == n

@@ -40,6 +40,7 @@ import cv2
 import numpy as np
 import rclpy
 
+from stack_cups import motion as M
 from stack_cups import params
 from stack_cups import perception as P
 from stack_cups.align import align_arm, odom_note
@@ -60,6 +61,7 @@ class FindCup(CupRobot):
         super().__init__()
         self.phase = "START"
         self.t_start = self.t_phase = None  # (ros time, wall time)
+        self.target_odom = None  # xy (odom) of the cup being picked, once measured
 
     def start(self, name="find_cup"):
         super().start(name)
@@ -99,8 +101,22 @@ class FindCup(CupRobot):
         snap, why = self.camera.snapshot(BASE_FRAME)
         if snap is None:
             return {"why": why}
+        c, target = self.cfg, None
+        pose = self.odom_pose()
+        if self.target_odom is not None and pose is not None:
+            target = M.odom_to_base(self.target_odom, pose)
+        opts = {
+            "red": {"hue_width": c["red_hue_width"], "sat_min": c["red_sat_min"],
+                    "val_min": c["red_val_min"]},
+            "min_area": c["red_min_area"],
+            "ignore_taped": c["ignore_taped"],
+            "tape": {"hue_min": c["tape_hue_min"], "hue_max": c["tape_hue_max"],
+                     "sat_min": c["tape_sat_min"], "val_min": c["tape_val_min"]},
+            "track_radius": c["track_radius"],
+            "split": {"min_rise": c["split_min_rise"]},
+        }
         return P.measure_cup(snap["img"], snap["depth"], snap["K_color"], snap["K_depth"],
-                             snap["T_base"], snap["T_cd"], full)
+                             snap["T_base"], snap["T_cd"], full, target=target, opts=opts)
 
     def measure_fresh(self, samples=None, full=False):
         """The cup measured while stopped (median of `samples`), with the median radius,
@@ -111,6 +127,10 @@ class FindCup(CupRobot):
                                       key="cup", on_sample=self.show)
         if m is None:
             return None
+        if "odom_point" in m:
+            # track this cup from now on (roadmap 1.1): later measurements take the cup
+            # nearest here, not the closest one, so another cup cannot take its place
+            self.target_odom = np.asarray(m["odom_point"][:2], float)
         found = m["samples"]
         m["radius"] = float(np.median([s["radius"] for s in found]))
         if full:
@@ -124,6 +144,9 @@ class FindCup(CupRobot):
         if not self.cfg["show_windows"] or m is None or "img" not in m:
             return
         img = m["img"].copy()
+        for other in m.get("cups", []):
+            x, y, w, h = other["bbox"]
+            cv2.rectangle(img, (x, y), (x + w, y + h), (160, 160, 160), 1)
         if m.get("bbox"):
             x, y, w, h = m["bbox"]
             cv2.rectangle(img, (x, y), (x + w, y + h), (0, 255, 0), 2)
@@ -176,8 +199,11 @@ class FindCup(CupRobot):
         m = self.measure_fresh()
         if m is None:
             raise RuntimeError(f"cup not found: {self.camera.last_miss}")
+        last = m["samples"][-1]
+        placed = sum(P.in_area(c["cup"][:2], last.get("tape_area")) for c in last["cups"])
         self.log(f"cup at base ({m['cup'][0]:.3f}, {m['cup'][1]:.3f}, {m['cup'][2]:.3f}) m"
-                 f"{odom_note(m)}")
+                 f"{odom_note(m)}; {len(last['cups'])} red cups in view, {placed} inside the "
+                 "tape: picking the closest loose one")
         offs = self.arm_offsets(BASE_FRAME, GRASP_FRAME)
         h = offs["h"] if offs else 0.115
         lift = float(np.clip(m["cup"][2] + self.cfg["ready_above_cup"] - h, 0.3, 1.05))
@@ -235,6 +261,7 @@ class FindCup(CupRobot):
 
     def pick_attempt(self):
         """READY, ALIGN, REACH and (with grasp) CARRY, as far as `steps` allows."""
+        self.target_odom = None  # READY picks the closest loose cup afresh
         offs = None
         if self.step("ready", "raise the lift above the cup, straighten the wrist, "
                               "open the gripper"):
