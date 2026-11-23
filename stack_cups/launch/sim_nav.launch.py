@@ -14,11 +14,10 @@ Why not the starter's `navigation.launch.py use_sim_time:=true`:
     base never moves.
 This file starts only the starter's Nav2 bringup, on wall time, with that remap.
 
-The sim's base also follows cmd_vel slowly: its wheel actuators have gear 3, which the sim
-driver's wheel-speed math leaves out, and heavy joint friction, so the base reaches only about
-a quarter of the commanded speed (1 rad/s turns at 0.27 rad/s; top speed ~0.09 m/s). A 180
-degree turn in place then takes ~12 s, longer than Nav2's 10 s progress check, and slow
-commands barely move it. SIM_NAV2 adjusts the starter's parameters for that.
+SIM_NAV2 adjusts the starter's parameters for the sim: a longer progress check, no crawl
+speeds, and slower turns (see the comments there). The base used to follow cmd_vel at about
+a quarter of the commanded speed (a wheel gear the sim driver left out; fixed in
+sim/patches/stretch_mujoco.patch).
 """
 
 import os
@@ -34,8 +33,18 @@ from nav2_common.launch import RewrittenYaml
 
 SIM_NAV2 = {  # parameter name (anywhere in the params file): sim value
     "movement_time_allowance": "30.0",  # progress check: 0.5 m within this many seconds
-    "min_speed_xy": "0.05",  # DWB: don't command crawl speeds the sim barely follows
-    "min_speed_theta": "0.4",
+    "min_speed_xy": "0.05",  # DWB: don't command crawl speeds
+    "min_speed_theta": "0.1",
+    # Turn at most 0.3 rad/s (the starter allows 1.0). The sim stamps its lidar scans with
+    # wall time when they are published, not when they were taken, so fast turns smear
+    # the scans against odometry: at the starter's 1 rad/s AMCL ended 2.5 m off (13-18 cm
+    # at 0.27 rad/s, the old sim base's real top turn rate).
+    "max_vel_theta": "0.25",
+    "max_rotational_vel": "0.25",
+    "max_vel_x": "0.1",
+    "max_speed_xy": "0.1",
+    "max_velocity": "[0.1, 0.0, 0.25]",
+    "min_velocity": "[-0.1, 0.0, -0.25]",
 }
 
 

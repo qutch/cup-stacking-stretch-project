@@ -18,6 +18,10 @@ ROBOT = {
     "aborted_ok_tol": 0.05,
     # --- safety (roadmap 0.6)
     "max_base_speed": 0.3,  # m/s, hard cap on every base speed command
+    "max_turn_rate": 0.5,  # rad/s, hard cap on every base turn command
+    # Position mode for arm and head moves, navigation mode for base moves (switching
+    # as needed, roadmap 1.3b). False = stay in navigation mode for everything.
+    "switch_modes": True,
     # Joint speed limits passed with every arm/lift/wrist/head move; 0 = driver default.
     # The sim ignores them; on the robot they keep the first runs slow.
     "max_joint_speed_m": 0.0,  # m/s for joint_lift and wrist_extension
@@ -90,6 +94,29 @@ FIND_CUP = {
     "track_radius": 0.08,
     # m, split a red blob where the front surface bulges back this much between two cups
     "split_min_rise": 0.015,
+    # --- drive to the table with Nav2 (roadmap 1.3); Nav2 must be running
+    "navigate": False,  # run the navigate step first
+    "nav_goal_x": 0.0,  # map frame, near the cup table, arm side (base -y) facing it
+    "nav_goal_y": 0.0,
+    "nav_goal_yaw": 0.0,
+    # Tell AMCL where the robot starts (sim: the map origin is the start pose). False on
+    # the robot: set the initial pose in RViz.
+    "nav_set_initial_pose": True,
+    "nav_init_x": 0.0,
+    "nav_init_y": 0.0,
+    "nav_init_yaw": 0.0,
+    "nav_timeout": 120.0,  # s, for Nav2 to start and to arrive
+    # --- square up to the table edge (roadmap 1.3b): Nav2 stops within 0.25 rad
+    "square_up": True,
+    "square_tol": 0.01,  # rad, closer than this to square = no turn
+    "square_tries": 3,
+    # m from the base center to the table edge for picking (the sim's start pose: the
+    # task cups are in reach from there); off by more than edge_tol = drive to it.
+    # 0 = do not change the distance.
+    "edge_distance": 0.55,
+    "edge_tol": 0.03,
+    "w_max": 0.3,  # rad/s, turning in place
+    "w_min": 0.08,  # rad/s, slowest turn command that still turns the base
     # --- search when no cup is in view (roadmap 1.2)
     "search_pan_step": 0.6,  # rad between head pans (the camera sees ~1.2 rad across)
     "search_pan_steps": 2,  # pans each way from head_pan; 0 = do not turn the head

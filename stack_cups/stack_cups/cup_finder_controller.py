@@ -12,6 +12,9 @@ still takes move_to_pose goals.
 Phases (each logged as it starts, with its duration when it ends):
   1. START     - wait for camera images, depth, camera info, TF and /odom
   2. AIM_HEAD  - point the head camera at the table on the robot's arm side
+  0. NAVIGATE  - with navigate: stow the arm, Nav2 to nav_goal near the table (map frame)
+  2b. SQUARE   - with square_up: fit the table's near edge in depth, turn in place until
+                 the base is parallel to it (Nav2 stops within 0.25 rad of the goal)
   3. READY     - measure the closest loose cup (SEARCH first if none is in view: turn
                  the head, then drive along the table), raise the lift above it,
                  straighten the wrist, open the gripper, read the grasp offsets from TF
@@ -37,6 +40,7 @@ Stop at any time: Ctrl+C, ros2 topic pub --once /stack_cups/stop std_msgs/msg/Em
 robot's runstop button. With step_confirm, each step waits for Enter or /stack_cups/continue.
 """
 
+import math
 import sys
 import time
 
@@ -53,7 +57,7 @@ from stack_cups.robot import CupRobot, JointBlocked, StopRequested
 
 BASE_FRAME = "base_link"
 GRASP_FRAME = "link_grasp_center"
-STEPS = ("aim_head", "ready", "align", "reach", "carry")
+STEPS = ("navigate", "aim_head", "square", "ready", "align", "reach", "carry")
 
 
 class GraspFailed(RuntimeError):
@@ -199,6 +203,105 @@ class FindCup(CupRobot):
         pan, tilt = self.cfg["head_pan"], self.cfg["head_tilt"]
         self.set_phase("AIM_HEAD", f"pan={pan:.2f} tilt={tilt:.2f}")
         self.move({"joint_head_pan": pan, "joint_head_tilt": tilt})
+
+    def navigate(self):
+        """Roadmap 1.3: stow the arm (Nav2's footprint assumes it), then drive to the pose
+        near the cup table (nav_goal_x/y/yaw, map frame; the arm side, base -y, faces the
+        table) with Nav2 (BasicNavigator from parcs_stretch_nav2). Nav2 has to be running.
+        With nav_set_initial_pose, AMCL is first told the robot is at nav_init_x/y/yaw
+        (the sim's map origin is its start pose; on the robot, set it in RViz)."""
+        from geometry_msgs.msg import PoseStamped
+        from parcs_stretch_nav2.robot_navigator import BasicNavigator, TaskResult
+
+        c = self.cfg
+        goal = (c["nav_goal_x"], c["nav_goal_y"], c["nav_goal_yaw"])
+        self.set_phase("NAVIGATE", f"stowing the arm, then Nav2 to map ({goal[0]:+.2f}, "
+                                   f"{goal[1]:+.2f}, yaw {goal[2]:+.2f})")
+        self.stow_the_robot()
+        end = self.now() + 30.0
+        while not (self.joint_pos("joint_lift") < 0.35
+                   and abs(self.joint_pos("wrist_extension")) < 0.02):
+            if self.now() > end:
+                raise RuntimeError("the arm did not stow in 30 s")
+            self._idle(0.2)
+
+        def pose(nav, x, y, yaw):
+            p = PoseStamped()
+            p.header.frame_id = "map"
+            p.header.stamp = nav.get_clock().now().to_msg()
+            p.pose.position.x, p.pose.position.y = float(x), float(y)
+            p.pose.orientation.z, p.pose.orientation.w = math.sin(yaw / 2), math.cos(yaw / 2)
+            return p
+
+        self.set_driver_mode("nav2")  # Nav2 drives the base; we stop sending cmd_vel
+        nav = BasicNavigator()
+        try:
+            if not nav.nav_to_pose_client.wait_for_server(timeout_sec=c["nav_timeout"]):
+                raise RuntimeError(f"no Nav2 (navigate_to_pose) after {c['nav_timeout']:.0f} s"
+                                   " - start it (sim: ros2 launch stack_cups sim_nav.launch.py)")
+            if c["nav_set_initial_pose"]:
+                nav.setInitialPose(pose(nav, c["nav_init_x"], c["nav_init_y"], c["nav_init_yaw"]))
+            nav.waitUntilNav2Active()
+            t0 = time.time()
+            if not nav.goToPose(pose(nav, *goal)):
+                raise RuntimeError("Nav2 rejected the goal")
+            while not nav.isTaskComplete():
+                if self.stop_reason is not None or time.time() - t0 > c["nav_timeout"]:
+                    nav.cancelTask()
+                    self.check_stop()
+                    raise RuntimeError(f"Nav2 did not arrive in {c['nav_timeout']:.0f} s")
+            result = nav.getResult()
+            if result != TaskResult.SUCCEEDED:
+                raise RuntimeError(f"Nav2 failed to reach the goal ({result})")
+            self.log(f"[NAVIGATE] arrived after {time.time() - t0:.1f} s")
+        finally:
+            nav.destroy_node()
+            self.enter_navigation_mode()
+
+    def square_up(self):
+        """Roadmap 1.3b: Nav2 stops within 0.25 m and 0.25 rad of its goal. Turn in place
+        until the base is parallel to the table's near edge (fitted in depth), so ALIGN's
+        straight drives run along it; then, if the edge is more than edge_tol from
+        edge_distance (where the cups are in reach), turn to face the table, drive the
+        difference, turn back and square up again."""
+        c = self.cfg
+        self.set_phase("SQUARE", "fitting the table edge in depth")
+        edge = self.turn_square()
+        off = edge["distance"] - c["edge_distance"]
+        if c["edge_distance"] > 0 and abs(off) > c["edge_tol"]:
+            self.log(f"[SQUARE] the edge is {off * 100:+.1f} cm from edge_distance "
+                     f"{c['edge_distance']:.2f} m: turning to the table to drive it")
+            quarter = -math.pi / 2  # the arm side is base -y: turn clockwise to face it
+            self.turn_by(quarter, w_max=c["w_max"], w_min=c["w_min"])
+            moved = self.drive_by(off, v_max=c["v_max"], v_min=c["v_min"], decel=c["decel"],
+                                  tol=c["drive_tol"])
+            self.turn_by(-quarter, w_max=c["w_max"], w_min=c["w_min"])
+            self.log(f"[SQUARE] drove {moved * 100:+.1f} cm toward the table")
+            edge = self.turn_square()
+        return edge
+
+    def turn_square(self):
+        c = self.cfg
+        for i in range(int(c["square_tries"])):
+            self._idle(c["settle_s"])  # let the base settle, then use frames from after it
+            self.camera.wait_new_depth(2)
+            snap, why = self.camera.snapshot(BASE_FRAME)
+            if snap is None:
+                raise RuntimeError(f"no camera frame to find the table edge: {why}")
+            R, t = snap["T_base"]
+            pts = P.to_base(P.backproject(snap["depth"], snap["K_depth"], step=2), R, t)
+            edge = P.table_edge_line(pts)
+            if edge is None:
+                raise RuntimeError("could not find the table edge in depth")
+            self.log(f"[SQUARE] table edge {edge['distance']:.3f} m away, at "
+                     f"{math.degrees(edge['angle']):+.1f} deg (top {edge['top']:.3f} m, "
+                     f"{edge['bins']} slices)")
+            if abs(edge["angle"]) < c["square_tol"]:
+                return edge
+            turned = self.turn_by(edge["angle"], w_max=c["w_max"], w_min=c["w_min"])
+            self.log(f"[SQUARE] turned {math.degrees(turned):+.1f} deg")
+        raise RuntimeError(f"still {math.degrees(edge['angle']):+.1f} deg off the table edge "
+                           f"after {int(c['square_tries'])} turns")
 
     def look(self, pan, tilt):
         self.move({"joint_head_pan": pan, "joint_head_tilt": tilt})
@@ -455,8 +558,13 @@ class FindCup(CupRobot):
                                    f"{','.join(STEPS)}")
             self.wait_for_data()
             self.enter_navigation_mode()
-            if self.cfg["aim_head"] and self.step("aim_head", "point the head at the table"):
+            c = self.cfg
+            if c["navigate"] and self.step("navigate", "stow the arm, Nav2 to the table"):
+                self.navigate()
+            if c["aim_head"] and self.step("aim_head", "point the head at the table"):
                 self.aim_head()
+            if c["square_up"] and self.step("square", "turn square to the table edge"):
+                self.square_up()
             # Retry a failed grasp from READY (roadmap 1.10); READY re-measures the cup
             tries = (max(1, int(self.cfg["grasp_tries"]))
                      if self.cfg["grasp"] and "ready" in self.steps else 1)

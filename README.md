@@ -296,10 +296,21 @@ ros2 launch stack_cups sim_nav.launch.py     # the starter's Nav2, set up for th
 python3 sim/nav_check.py                     # stows the arm, then drives to 3 goals
 ```
 
-In the sim, Nav2 reached all three goals: the stacking area (13 s), the far side of the
-table (60 s, around the table), and back to the start (95 s). By the sim's true pose the
-robot ended 24-34 cm and at most 10° from each goal: Nav2 stops within 25 cm of where AMCL
-thinks it is, and AMCL was 13-18 cm off. Getting closer is ALIGN's job (roadmap 1.3b).
+In the sim, Nav2 reached all three goals: the stacking area (10 s), the far side of the
+table (50 s, around the table), and back to the start (72 s). By the sim's true pose the
+robot ended 23-32 cm and at most 6° from each goal: Nav2 stops within 25 cm of where AMCL
+thinks it is, and AMCL was 7-18 cm off. Getting closer is find_cup's SQUARE step (roadmap
+1.3b). `sim_nav.launch.py` caps Nav2 at 0.1 m/s and 0.25 rad/s in the sim: the sim stamps
+its lidar scans with wall time when they are sent, and at the starter's speeds (0.26 m/s,
+1 rad/s), now that the sim base really follows them, AMCL ended 1-2.5 m off.
+
+Pick a cup after driving there (Nav2 running):
+
+```bash
+ros2 launch stack_cups find_cup.launch.py config:=sim grasp:=true   # then, with ros2 run:
+ros2 run stack_cups find_cup --ros-args --params-file $(ros2 pkg prefix --share stack_cups)/config/sim.yaml \
+  -p grasp:=true -p navigate:=true -p nav_goal_x:=0.2 -p nav_goal_y:=0.0 -p nav_goal_yaw:=0.0
+```
 
 Use `sim_nav.launch.py` in the sim, not the starter's `navigation.launch.py use_sim_time:=true`:
 
@@ -521,18 +532,27 @@ which also sizes the sim's cups).
       `search_drive_max` each way (blind: robot.yaml allows only 0.4 m). A cup found off
       to the side is driven beside the arm. Sim: a cup 1.2 m ahead is found by the head
       and carried; with the head search off, the drive search finds it.
-- [ ] **1.3 Drive to the cup's general area** (partial: Nav2 from the starter package)
-  - Save a pose near the cup table in the map frame and drive there with
-    `BasicNavigator.goToPose`, with the arm side facing the table.
-  - Stow the arm first (the starter recommends it, and Nav2's footprint assumes it).
-  - `sim/cup_approach.py` is no longer needed for this; keep it only as a standalone
-    sim test.
-- [ ] **1.3b Hand off from Nav2 to ALIGN**
-  - Nav2 stops within 25 cm and 0.25 rad (about 14°) of the goal
-    (`xy_goal_tolerance`, `yaw_goal_tolerance`), so the camera has to finish the job.
-  - ALIGN only drives forward and back; add a step that turns the robot square to the
-    table edge (seen in depth) before aligning.
-  - Switch the driver from navigation mode to position mode for arm moves, and back.
+- [x] **1.3 Drive to the cup's general area** (the `navigate` step, with `navigate:=true`):
+      stow the arm (Nav2's footprint assumes it), then `BasicNavigator.goToPose` to
+      `nav_goal_x/y/yaw` (map frame, arm side facing the table). Nav2 must be running
+      (sim: `ros2 launch stack_cups sim_nav.launch.py`). With `nav_set_initial_pose` AMCL
+      is first given `nav_init_x/y/yaw` (sim only; on the robot set it in RViz). Our
+      cmd_vel stream pauses while Nav2 drives.
+  - [ ] On the robot: save the goal pose near the cup table in the real map.
+- [x] **1.3b Hand off from Nav2 to ALIGN** (the `square` step, `square_up`)
+  - [x] Nav2 stops within 25 cm and 0.25 rad of its goal. SQUARE fits the table's near
+    edge in depth (`perception.table_edge_line`) and turns in place (`turn_by`, odometry)
+    until the base is parallel to it; if the edge is more than `edge_tol` from
+    `edge_distance` (0.55 m), it turns to face the table, drives the difference, turns
+    back and squares up again.
+  - [x] Driver modes: position mode for arm and head moves, navigation mode for base
+    moves, switched as needed (`switch_modes`).
+  - Sim: started 1 m back and turned 60 deg, Nav2 to the near side (14 s), the edge was
+    9.7 cm too far and 0.5 deg off; after SQUARE 0.554 m and +0.2 deg; then DONE carrying
+    the cup (77.6 s in all).
+  - [ ] Open: from the far side (Nav2 there in 83 s, squared from +13 deg) the one cup
+    there stands 19 cm in from the edge, and the first reach knocked it over (it then
+    measured 9.3 cm tall); the retries chased it out of reach. Needs a look at deep cups.
 - [x] **1.4 Center the cup and line it up with the arm** (about ±1 cm; slow in the sim)
 - [x] **1.5 Measure the cup and table, check the reach is safe**
   - [x] Cup height cross-check: the cup's highest red point above the table top, against

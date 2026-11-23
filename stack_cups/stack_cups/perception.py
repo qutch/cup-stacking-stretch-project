@@ -180,6 +180,52 @@ def table_edge_distance(points_base, x_center, half_width, z_max, side=-1):
     return float(np.percentile(p[sel, 1] * side, 3))
 
 
+def table_edge_line(points_base, side=-1, z_range=(0.4, 1.2), bin_x=0.02, x_half=0.6,
+                    min_bins=6):
+    """The table's near edge on the arm side (base_link -y when side=-1), from depth
+    (roadmap 1.3b). The table top is the most common height in z_range; for every
+    bin_x slice along x, the edge is the nearest table-top point; a line is fitted to
+    those, dropping outliers. Returns {"angle": rad to turn the base (counterclockwise
+    +) to be square with the edge, "distance": edge distance from the base center at
+    x=0, "top": table top height, "bins": slices used}, or None."""
+    p = np.asarray(points_base)
+    sel = ((p[:, 1] * side) > 0.22) & (p[:, 2] > z_range[0]) & (p[:, 2] < z_range[1])
+    sel &= np.abs(p[:, 0]) < x_half
+    p = p[sel]
+    if len(p) < 50:
+        return None
+    edges = np.arange(z_range[0], z_range[1] + 0.01, 0.01)
+    counts, edges = np.histogram(p[:, 2], bins=edges)
+    i = int(np.argmax(counts))
+    top = float(np.median(p[(p[:, 2] >= edges[i]) & (p[:, 2] <= edges[i + 1]), 2]))
+    p = p[np.abs(p[:, 2] - top) < 0.015]
+    near = p[:, 1] * side  # distance out from the base on the arm side
+    xb = np.floor(p[:, 0] / bin_x).astype(int)
+    xs, es = [], []
+    for b in np.unique(xb):
+        k = xb == b
+        if np.count_nonzero(k) >= 5:
+            xs.append((b + 0.5) * bin_x)
+            es.append(float(near[k].min()))
+    if len(xs) < min_bins:
+        return None
+    xs, es = np.array(xs), np.array(es)
+    # start from the slices near the median edge distance: a few slices can see
+    # something nearer at table height (the robot's own arm sticking out, a cup)
+    keep = np.abs(es - np.median(es)) < 0.03
+    for _ in range(3):
+        if np.count_nonzero(keep) < min_bins:
+            return None
+        a, b = np.polyfit(xs[keep], es[keep], 1)
+        keep = np.abs(es - (a * xs + b)) < 0.015
+    if np.count_nonzero(keep) < min_bins:
+        return None
+    a, b = np.polyfit(xs[keep], es[keep], 1)
+    # the edge runs along (1, side * a) in base_link: turn by that angle to face along it
+    return {"angle": float(np.arctan(side * a)), "distance": float(b), "top": top,
+            "bins": int(np.count_nonzero(keep))}
+
+
 def plan_reach(cup, cup_radius, table_top, edge_dist, offsets, *,
                finger_clearance=0.035, approach_gap=0.0, max_ext=0.50,
                lift_range=(0.05, 1.05), retracted_tip=0.03, edge_margin=0.03):

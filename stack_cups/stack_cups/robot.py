@@ -120,7 +120,8 @@ class CupRobot(hm.HelloNode):
         hm.HelloNode.__init__(self)
         self.cmd_v = 0.0
         self.cmd_w = 0.0  # rad/s, only drive_by's heading hold turns the base
-        self.nav_active = False
+        self.nav_active = False  # True: we stream cmd_vel (navigation mode, our base moves)
+        self.driver_mode = None  # the mode we last switched the driver to
         self._odom = None
         self.odom_count = 0
         self.warned_abort = False
@@ -311,6 +312,8 @@ class CupRobot(hm.HelloNode):
         With joint speed limits, gripper joints move in a goal of their own: HelloNode
         gives every joint without a speed 0.0 once one joint in a goal has one."""
         self.check_stop()
+        if self.rcfg["switch_modes"]:
+            self.set_driver_mode("position")
         limited = self._speed_limited(pose) is not pose
         grip = {j: x for j, x in pose.items() if j in GRIPPER_JOINTS}
         if limited and grip and len(grip) < len(pose):
@@ -535,11 +538,35 @@ class CupRobot(hm.HelloNode):
 
     # --------------------------------------------------------------------- base
     def enter_navigation_mode(self):
-        """Navigation mode: the base takes cmd_vel, every other joint still takes
-        move_to_pose goals (HelloNode logs a 'position mode' warning for each one)."""
-        self.switch_to_navigation_mode()
-        self.cmd_v = self.cmd_w = 0.0
-        self.nav_active = True
+        """Navigation mode: the base takes cmd_vel (streamed by us). Every other joint
+        still takes move_to_pose goals; with switch_modes, move() switches to position
+        mode for them and the next base move switches back (roadmap 1.3b)."""
+        self.set_driver_mode("navigation")
+
+    def set_driver_mode(self, mode):
+        """'navigation' (we stream cmd_vel), 'position' (arm and head moves), or 'nav2'
+        (navigation mode, but we stop streaming so Nav2's cmd_vel is the only one)."""
+        if mode == self.driver_mode:
+            return
+        with self._pub_lock:
+            self.cmd_v = self.cmd_w = 0.0
+            if self.nav_active:
+                self._publish_cmd()  # a last zero before we stop streaming
+            self.nav_active = False
+        if mode == "position":
+            self.switch_to_position_mode()
+        else:
+            self.switch_to_navigation_mode()
+        self.driver_mode = mode
+        self.nav_active = mode == "navigation"
+
+    def _base_mode(self):
+        """Make sure our base commands reach the driver (navigation mode)."""
+        if not self.nav_active:
+            if self.rcfg["switch_modes"] or self.driver_mode is None:
+                self.set_driver_mode("navigation")
+            else:
+                raise RuntimeError("base moves need navigation mode")
 
     def _on_odom(self, msg):
         p, q = msg.pose.pose.position, msg.pose.pose.orientation
@@ -568,19 +595,50 @@ class CupRobot(hm.HelloNode):
             time.sleep(1.0 / CMD_VEL_HZ)
 
     def drive(self, v, w=0.0):
-        """Set the base speed (and turn rate w, rad/s, capped at HEADING_MAX_W), capped at
-        max_base_speed; the stream thread keeps re-sending it to the driver. Speed 0 is
-        always allowed (and stops turning too); any other speed raises StopRequested after
-        a stop."""
-        if v != 0.0:
+        """Set the base speed (capped at max_base_speed) and turn rate w (rad/s, capped at
+        max_turn_rate); the stream thread keeps re-sending them to the driver. drive(0.0)
+        (stop) is always allowed; anything else raises StopRequested after a stop."""
+        if v != 0.0 or w != 0.0:
             self.check_stop()
-        else:
-            w = 0.0
+            self._base_mode()
         cap = float(self.rcfg["max_base_speed"])
         with self._pub_lock:
             self.cmd_v = float(np.clip(v, -cap, cap))
-            self.cmd_w = float(np.clip(w, -HEADING_MAX_W, HEADING_MAX_W))
+            wcap = float(self.rcfg["max_turn_rate"])
+            self.cmd_w = float(np.clip(w, -wcap, wcap))
             self._publish_cmd()
+
+    def turn_by(self, angle, *, w_max=0.3, w_min=0.08, decel=0.5, tol=0.005,
+                stall_s=2.0, timeout_s=30.0):
+        """Turn the base in place by `angle` rad (+ = counterclockwise), steered by the
+        odometry yaw (roadmap 1.3b). Returns the angle turned; raises on a stall or a
+        timeout. The command is always left at 0."""
+        self._base_mode()
+        start = self.odom_pose()
+        if start is None:
+            raise RuntimeError(f"no odometry on {self.odom_topic}")
+        t0 = stall_t = self.now()
+        turned = stall_ref = 0.0
+        try:
+            while rclpy.ok():
+                now = self.now()
+                yaw = self.odom_pose()[2]
+                turned = float(np.arctan2(np.sin(yaw - start[2]), np.cos(yaw - start[2])))
+                w = motion.base_speed(angle - turned, w_max, w_min, decel, tol)
+                if w == 0.0:
+                    break
+                if abs(turned - stall_ref) > 0.002:
+                    stall_ref, stall_t = turned, now
+                elif now - stall_t > stall_s:
+                    raise RuntimeError(f"base stalled turning at {turned:+.3f} of "
+                                       f"{angle:+.3f} rad")
+                if now - t0 > timeout_s:
+                    raise RuntimeError(f"turn_by timed out at {turned:+.3f} of {angle:+.3f} rad")
+                self.drive(0.0, w)
+                self._idle(1.0 / DRIVE_HZ)
+        finally:
+            self.drive(0.0)
+        return turned
 
     def drive_by(self, distance, *, v_max, v_min, decel, tol=0.003, stall_s=2.0,
                  timeout_s=None, max_reversals=3):
@@ -590,8 +648,7 @@ class CupRobot(hm.HelloNode):
         (both in ROS time). The default timeout is 30 s plus twice the time the distance
         takes at v_min, so long drives (SEARCH) do not time out at low speeds. The
         command is always left at 0, even on an exception, a stop request or Ctrl+C."""
-        if not self.nav_active:
-            raise RuntimeError("drive_by needs navigation mode")
+        self._base_mode()
         start = self.odom_pose()
         if start is None:
             raise RuntimeError(f"no odometry on {self.odom_topic}")
@@ -630,7 +687,8 @@ class CupRobot(hm.HelloNode):
                                        f"during drive_by (did the sim freeze?)")
                 yaw_err = float(np.arctan2(np.sin(self.odom_pose()[2] - start[2]),
                                            np.cos(self.odom_pose()[2] - start[2])))
-                self.drive(v, -HEADING_GAIN * yaw_err)
+                w = float(np.clip(-HEADING_GAIN * yaw_err, -HEADING_MAX_W, HEADING_MAX_W))
+                self.drive(v, w)
                 self._idle(1.0 / DRIVE_HZ)
         finally:
             self.drive(0.0)
