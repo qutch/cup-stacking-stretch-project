@@ -36,7 +36,7 @@
     gripper_max_effort: 0.0   # the sim reports no gripper effort
     grasp_check_lift: 0.08      # > grasp point to cup top
     grasp_slip_tol: 0.01
-    ready_above_cup: 0.25
+    ready_above_cup: 0.05     # higher hides the cup from the head camera
     v_max: 0.15
     v_min: 0.06               # sim only: the sim's wheel friction stalls slower commands
     decel: 0.1

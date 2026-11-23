@@ -126,10 +126,11 @@ ros2 launch stack_cups find_cup.launch.py config:=sim step_confirm:=true      # 
 ```
 
 `config:=` is `sim`, `robot`, or the path of a parameter file. `ros2 run stack_cups find_cup`
-also works and uses the sim values. In the task scene `find_cup` does not work yet: it goes
-for the biggest red blob the head camera sees, and once the raised arm hides that cup, the
-biggest blob is the next cup, so ALIGN chases a different cup after each drive and gives up
-(roadmap 1.1). Use `scene:=default` (one cup) until then.
+also works and uses the sim values. It exits when it is done: exit code 0 after `[DONE]`,
+1 after `[FAILED]` or `[STOPPED]` (with `show_windows:=true` it waits for Ctrl+C first).
+It works in the task scene (`[DONE] holding the cup` with 6 cups) and with one cup
+(`sim.launch.py cups:=single`, for grasp tests). It still goes for the biggest red blob,
+not the closest loose cup (roadmap 1.1).
 
 Main parameters. `grasp`, `steps`, `step_confirm` and `show_windows` can be given to
 `find_cup.launch.py` as `name:=value`; `ros2 run stack_cups find_cup --ros-args -p name:=value`
@@ -245,12 +246,18 @@ the other joints take `move_to_pose` goals):
    node does not push past the target.
 
 In MuJoCo tests the cup is located within about 1 cm and the table within about 1 cm, and
-ALIGN lines the arm up with the cup within about 1 cm. Picking the cup up is not reliable
-yet: in 3 sim runs with `grasp:=true` (default scene) the cup was never lifted. One run
-stopped at the wrist check; in the other two the gripper closed without holding the cup.
-Opening the gripper wider (0.5, the earlier value, instead of 0.3) did not help: in 3 more
-runs the arm stopped 3.3 cm short of the cup and the gripper closed on nothing
-(roadmap 1.6-1.8).
+ALIGN lines the arm up with the cup within about 1 cm. With `grasp:=true` the gripper
+closes until the fingers stop on the cup and squeezes `gripper_squeeze` past that
+(roadmap 1.7); then the lift rises `grasp_check_lift` (8 cm) and the run fails unless the
+fingers stay where they were (roadmap 1.8). A 20 g task-scene cup was lifted and carried
+(it moved 28 cm with the arm when it retracted). A reach that is blocked short of the cup
+is a failure, not `[DONE]`.
+
+Two things that looked like grasp problems were not: the raised gripper hid the cup from
+the head camera on the 74 cm task table (fixed: `ready_above_cup` 0.05 m instead of
+0.25), and stretch_mujoco's default scene object is a 500 g solid cylinder (a real cup
+is ~10 g), which slips out. Lift checks shorter than the grasp point's distance to the
+cup's top passed even when the cup stayed behind, because the fingers slid up it.
 
 ## The task scene
 
@@ -497,8 +504,9 @@ which also sizes the sim's cups).
   - Ignore red cups inside the taped area (already placed).
   - Use depth to separate cups that touch.
   - Pick the closest loose cup, not the biggest red blob.
-  - Keep tracking the same cup through ALIGN (the one nearest its last position): in the
-    task scene the raised arm hides the target and the next cup becomes the biggest blob.
+  - [x] Keep the target in view through ALIGN: the raised gripper hid it on the 74 cm
+    table (`ready_above_cup` 0.25 -> 0.05 m). Still to do: track it by position (the one
+    nearest its last position) in case something else hides it.
 - [ ] **1.2 Search when no cup is in view**: pan the head, or turn and drive.
 - [ ] **1.3 Drive to the cup's general area** (partial: Nav2 from the starter package)
   - Save a pose near the cup table in the map frame and drive there with

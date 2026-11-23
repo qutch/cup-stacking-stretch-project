@@ -59,7 +59,10 @@ FIND_CUP = {
     # cup that stayed on the table and close on nothing.
     "grasp_check_lift": 0.08,
     "grasp_slip_tol": 0.01,  # finger units: closing more than this while lifting = slipped
-    "ready_above_cup": 0.25,  # m, grasp point height above the cup while driving
+    # m, grasp point height above the cup's center while driving (arm retracted, so not
+    # over the table). Keep it low: at 0.25 m the raised gripper sat between the head
+    # camera and a cup on a 74 cm table, so ALIGN lost the cup after the first drive.
+    "ready_above_cup": 0.05,
     # --- base moves (odometry-steered)
     "v_max": 0.15,  # m/s, base speed far from the target
     "v_min": 0.06,  # m/s, slowest command that still moves the base (sim: wheel friction)
