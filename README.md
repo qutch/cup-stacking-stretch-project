@@ -304,10 +304,9 @@ thinks it is, and AMCL was 7-18 cm off. Getting closer is find_cup's SQUARE step
 its lidar scans with wall time when they are sent, and at the starter's speeds (0.26 m/s,
 1 rad/s), now that the sim base really follows them, AMCL ended 1-2.5 m off.
 
-Pick a cup after driving there (Nav2 running):
+Pick a cup after driving there with Nav2 (Nav2 running):
 
 ```bash
-ros2 launch stack_cups find_cup.launch.py config:=sim grasp:=true   # then, with ros2 run:
 ros2 run stack_cups find_cup --ros-args --params-file $(ros2 pkg prefix --share stack_cups)/config/sim.yaml \
   -p grasp:=true -p navigate:=true -p nav_goal_x:=0.2 -p nav_goal_y:=0.0 -p nav_goal_yaw:=0.0
 ```
@@ -581,7 +580,13 @@ which also sizes the sim's cups).
       way in, the wrist stays level so the cup stays upright, and the run fails if the
       fingers close further on the way (the cup dropped).
   - [ ] Tuck the wrist (`carry_wrist_yaw`, 0 = straight for now): the cup then sits about
-    0.4 m from the base center, outside Nav2's 0.22 m `robot_radius` (see 2.4).
+    0.4 m from the base center, outside Nav2's 0.22 m `robot_radius` (see 2.4). Grasp
+    point vs yaw at the carry pose (sim, no cup): 0 -> 0.415 m, 1.57 -> 0.287 m, 2.2 ->
+    0.197 m, 2.8 -> 0.129 m; 3.12 is blocked by the robot. With a cup in hand, yaw 2.0,
+    2.2 and 2.5 each lost or jammed the cup during the tuck (fingers pushed open or
+    closing on nothing), likely the cup hitting the arm or lift carriage it hangs next
+    to. Next: see what it hits in the viewer, or carry straight and give Nav2 a larger
+    footprint while carrying.
 - [x] **1.10 Retry on a failed grasp**: a blocked reach, closing on nothing, a slip in
       the grasp check or a drop while carrying opens the gripper, pulls the arm in and
       repeats READY, ALIGN, REACH and CARRY, up to `grasp_tries` (3) attempts.
