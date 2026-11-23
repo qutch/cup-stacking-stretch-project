@@ -246,8 +246,8 @@ class FindCup(CupRobot):
             self.set_phase("FAILED", str(e))
         self.log(f"[timing] total {self.now() - self.t_start[0]:.1f} s "
                  f"(wall {time.time() - self.t_start[1]:.1f} s)")
-        # Keep the windows alive until Ctrl+C
-        while rclpy.ok():
+        # Keep the windows alive until Ctrl+C; with no windows, exit (so launch ends too)
+        while self.cfg["show_windows"] and rclpy.ok():
             self.show(self.measure(full=False))
             time.sleep(0.1)
 
