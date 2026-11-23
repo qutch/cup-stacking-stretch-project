@@ -7,6 +7,7 @@ task scene (roadmap 0.8). The saved map is stack_cups/maps/sim_task_room.yaml.
     python3 sim/map_sim_scene.py
     ros2 run nav2_map_server map_saver_cli -f stack_cups/maps/sim_task_room \
         --ros-args -p use_sim_time:=true
+    python3 sim/draw_table_on_map.py stack_cups/maps/sim_task_room.yaml
 
 The route (odom = world frame in the sim; the robot starts at the origin facing +x) keeps
 the robot's center at least 0.4 m from the table, walls and furniture of sim_scene.py.
