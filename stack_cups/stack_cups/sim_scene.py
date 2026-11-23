@@ -40,6 +40,8 @@ TAPE = {
 # Loose cups (x, y) on the table, upright. The last one is only reachable from the far side.
 LOOSE_CUPS = [(-0.30, -0.66), (-0.05, -0.80), (0.18, -0.67), (0.42, -0.79), (0.66, -0.68),
               (0.20, -1.12)]
+# cups:=single: one loose cup on the near side (for grasp tests without other cups)
+SINGLE_CUP = LOOSE_CUPS[2]
 ROOM = {"x0": -2.0, "x1": 3.0, "y0": -2.6, "y1": 1.4, "height": 0.5, "thickness": 0.05}
 # Asymmetric furniture so a 2D lidar map has features (an empty box room is symmetric)
 FURNITURE = [  # (x, y, half sizes)
@@ -202,7 +204,8 @@ def _add_cup(world, name, pos, flipped, cup, mesh):
 
 def build_spec(cups="upright", seed=None, cup=None):
     """MjSpec of the Stretch robot plus the task scene. cups: "upright" (loose cups on
-    the table) or "pyramid" (a finished flipped 3-2-1 pyramid inside the tape)."""
+    the table), "pyramid" (a finished flipped 3-2-1 pyramid inside the tape) or
+    "single" (one loose cup, for grasp tests)."""
     import mujoco
     from stretch_mujoco.utils import default_robot_xml_path
 
@@ -281,7 +284,10 @@ def build_spec(cups="upright", seed=None, cup=None):
             _add_cup(world, f"cup{i}", (p[0], p[1], p[2] + 0.002 * (1 + i // 3)), True, cup,
                      mesh.name)
     else:
-        xy = LOOSE_CUPS if seed is None else random_loose_cups(seed)
+        if cups == "single":
+            xy = [SINGLE_CUP]
+        else:
+            xy = LOOSE_CUPS if seed is None else random_loose_cups(seed)
         for i, (x, y) in enumerate(xy):
             _add_cup(world, f"cup{i}", (x, y, top + 0.002), False, cup, mesh.name)
     return spec
@@ -331,7 +337,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", help="write the scene MJCF here")
-    ap.add_argument("--cups", choices=["upright", "pyramid"], default="upright")
+    ap.add_argument("--cups", choices=["upright", "pyramid", "single"], default="upright")
     ap.add_argument("--seed", type=int, help="random loose-cup layout (default: fixed layout)")
     ap.add_argument("--check", action="store_true", help="simulate 3 s and report each cup")
     args = ap.parse_args()
