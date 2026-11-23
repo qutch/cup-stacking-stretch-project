@@ -186,6 +186,10 @@ CARRY = {
     # ahead and behind along the table (e.g. starting from task 1's spot when the cups
     # and the tape are on one table). Empty = look once.
     "tape_search_pans": [-0.8, -0.4, -1.6, -2.0, -2.4],
+    # m, the tape measured while stopped counts only if every sample's center is this
+    # close to their median (the cup's max_spread is 1 cm: the real camera's samples of
+    # the tape at ~0.9 m spread 1.5 cm)
+    "tape_max_spread": 0.01,
     "tape_square_tol": 0.02,  # rad, base parallel to the tape's edge within this
     "tape_square_tries": 5,  # turns to get there (sim: short turns end 1-3 deg off)
     "w_decel": 0.5,  # rad/s^2, how hard turns slow down near the target heading

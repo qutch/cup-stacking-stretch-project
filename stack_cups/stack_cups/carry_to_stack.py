@@ -52,6 +52,7 @@ EYE_FRAME = "camera_color_optical_frame"  # where the head camera looks from
 GRIPPER = "joint_gripper_finger_left"
 STEPS = ("localize", "navigate", "find_tape", "square", "align")
 PAN_LIMITS, TILT_LIMITS = (-3.9, 1.5), (-1.4, 0.4)  # inside the head joints' ranges
+CARRY_POSE_TOL = 0.2  # rad, wrist pitch and roll of the carry pose (level) within this
 
 
 def deg(rad):
@@ -162,7 +163,7 @@ class CarryToStack(CupRobot):
         self.look_at_tape(pan)
         c = self.cfg
         m = self.camera.measure_fresh(self.measure_tape, c["samples"], c["settle_s"],
-                                      c["sample_dt"], c["max_spread"], key="tape")
+                                      c["sample_dt"], c["tape_max_spread"], key="tape")
         if m is None:
             return None
         m["yaw"] = float(np.median([s["yaw"] for s in m["samples"]]))
@@ -208,6 +209,26 @@ class CarryToStack(CupRobot):
         xy = self.cup_xy()
         self.log(f"[START] holding a cup: fingers at {grip:+.3f}; the cup is at base "
                  f"({xy[0]:+.3f}, {xy[1]:+.3f})")
+        self.check_carry_pose()
+
+    def check_carry_pose(self):
+        """Raise unless the wrist is level and about straight, as task 1 leaves it. The
+        steps that line the cup up (SQUARE's reach check, ALIGN) measure where the cup is
+        from that pose. On the real robot the wrist drooped to pitch -1.38 during a runstop
+        between the tasks; the hanging cup then read 0.24 m closer to the base, and SQUARE
+        sidestepped 20 cm for nothing."""
+        if not self.steps & {"find_tape", "square", "align"}:
+            return
+        pitch, roll, yaw = (self.joint_pos(j) for j in
+                            ("joint_wrist_pitch", "joint_wrist_roll", "joint_wrist_yaw"))
+        if None in (pitch, roll, yaw):
+            return  # a robot without a dex wrist: nothing to check
+        if abs(pitch) > CARRY_POSE_TOL or abs(roll) > CARRY_POSE_TOL \
+                or abs(yaw) > self.cfg["max_yaw"]:
+            raise RuntimeError(
+                f"the wrist is not in task 1's carry pose (pitch {pitch:+.2f}, roll {roll:+.2f}, "
+                f"yaw {yaw:+.2f} rad; it should be level and straight). It droops while the "
+                f"robot is runstopped: level it again (README: carrying a cup) or rerun task 1")
 
     def localize(self):
         # Nav2's planner only finishes starting once AMCL has a pose (its costmap waits for

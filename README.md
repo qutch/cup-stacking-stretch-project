@@ -427,6 +427,7 @@ turns, wrist yaw, measuring, tape colour and Nav2 time limit use `find_cup`'s va
 | `held_min`, `grip_tol` | `0.05`, `0.05` | A cup is held if the fingers stopped `held_min` short of closed; it is lost if they close that far, or open by `grip_tol` |
 | `tape_head_pan`, `tape_head_tilt` | `-1.2`, `-0.7` rad | Where the head looks for the tape first |
 | `tape_search_pans` | `[-0.8, -0.4, -1.6, -2.0, -2.4]` rad | More head pans to try, in order, if the tape is not in view |
+| `tape_max_spread` | `0.01` m (robot `0.03`) | A tape measurement counts only if its samples agree this closely |
 | `tape_square_tol`, `tape_square_tries` | `0.02` rad, `5` | Parallel enough to the tape, and turns to get there |
 | `w_decel` | `0.5` | How hard turns slow down near the target heading (`w_max`, `w_min` are `find_cup`'s) |
 | `reach_target`, `reach_tol` | `0.31`, `0.12` m | Arm extension that should reach the area's center from where the robot parks; sidestep if it is off by more than `reach_tol` |
@@ -448,6 +449,15 @@ When the cups and the taped area are on the same table, Nav2 is not needed: afte
 `carry_steps:=find_tape,square,align` finds the tape (the head searches along the table),
 squares up to its edge and drives along the table until the cup lines up with its center.
 ALIGN drives by odometry, without obstacle avoidance: keep the floor along the table clear.
+
+Do not runstop the robot between the tasks: the wrist motors go limp and the wrist droops
+with the cup (on the robot to pitch -1.38). START then stops with "the wrist is not in
+task 1's carry pose". To level it again, hold the cup and run:
+
+```bash
+ros2 action send_goal /stretch_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory \
+  "{trajectory: {joint_names: [joint_wrist_pitch, joint_wrist_roll, joint_wrist_yaw], points: [{positions: [0.0, 0.0, 0.0], time_from_start: {sec: 3}}]}}"
+```
 
 On the real robot: run Nav2 with `ros2 launch stack_cups robot_nav.launch.py` (step 5 of
 [First runs on the real robot](#first-runs-on-the-real-robot)), measure `start_pose` and
