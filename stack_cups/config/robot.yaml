@@ -31,13 +31,15 @@
     head_tilt: -0.6
     grasp: false              # turn on once reaching is trusted
     show_windows: true
-    gripper_open: 0.3         # verify on the robot: real finger units differ from the sim's
+    gripper_open: 0.45        # robot: ~15 cm apart (0.5 is the end stop: reopening timed out)
     gripper_closed: -0.1      # verify on the robot: how far closing may go
     gripper_fit_per_m: 0.0       # robot finger units differ: fit them, then set
     gripper_fit_offset: -0.284
     grasp_open_margin: 0.015
-    gripper_squeeze: 0.05     # verify on the robot (finger units)
-    gripper_max_effort: 0.0   # verify: set from joint_states effort when gripping a cup
+    gripper_squeeze: 0.02     # robot: 0.05 crushed a Solo cup
+    gripper_max_effort: 0.0   # absolute limit; off: gripper_effort_rise finds the cup
+    gripper_effort_rise: 8.0  # verify: a 4-cup stack stalled the fingers at effort -54.8
+    gripper_step: 0.025
     grasp_check_lift: 0.08      # > grasp point to cup top
     grasp_slip_tol: 0.01
     carry_clearance: 0.05
@@ -90,6 +92,7 @@
     cup_height_tol: 0.03
     cup_height_strict: false
     grasp_height: 0.06        # verify: half the real cup's height
+    grasp_reach_past: 0.025   # robot: at 0 the cup slipped out of the closing fingers
     use_wrist_yaw: true
     max_yaw: 0.25
     arm_len: 0.270            # verify on the robot (sim/check_robot_layer.py measures it)

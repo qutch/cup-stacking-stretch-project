@@ -65,6 +65,11 @@ FIND_CUP = {
     # Stop closing when |effort| passes this (robot only; the sim reports no effort).
     # 0 = close by position only.
     "gripper_max_effort": 0.0,
+    # Stop closing when the effort moves this much from what it read while the fingers
+    # still closed on air (robot only; see CupRobot.close_gripper). A single Solo cup
+    # gives way, so the fingers never stop on it; at 0 they crushed it flat. 0 = off.
+    "gripper_effort_rise": 0.0,
+    "gripper_step": 0.05,  # finger units per closing step (smaller: a gentler first touch)
     # m, lift to check the cup comes along. Must be more than the grasp point's distance
     # below the cup's top (half a 12 cm cup at center grasps), so the fingers clear a
     # cup that stayed on the table and close on nothing.
@@ -151,6 +156,10 @@ FIND_CUP = {
     # center sits ~2.5 cm too high (the camera sees the top and inside of the cup more
     # than its lower half). < 0 = grasp at the measured center.
     "grasp_height": 0.06,
+    # m, reach this far past the measured cup center (roadmap 1.6). The camera sees only
+    # the near side of the cup, and fingers closing at its center line push it away:
+    # on the real robot it slipped out until the arm went about an inch further.
+    "grasp_reach_past": 0.0,
     # --- wrist yaw covers the last few cm (measured with sim/check_robot_layer.py)
     "use_wrist_yaw": True,
     "max_yaw": 0.25,  # rad (~14 deg): about +/-6.7 cm of sideways reach

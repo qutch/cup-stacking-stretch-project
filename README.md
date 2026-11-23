@@ -176,8 +176,26 @@ steps (for example `steps:=aim_head,ready` to stop with the arm raised above the
 
 ## First runs on the real robot
 
-The code has not run on the real robot yet. `config:=robot` is slow and step-by-step on
-purpose. Suggested order:
+Task 1 has run on a Stretch 3 (stretch-se3-3134); the grasp settings in `robot.yaml`
+come from those runs (see the table below). `config:=robot` is slow and step-by-step on
+purpose.
+
+On a robot account that has not run ROS 2 code before, the workspace may be only partly
+built, and the robot's head calibration may not be installed. Without it the driver logs
+`Calibrated backlash params not available`, and the head camera's pan was 3.9° off, so
+ALIGN missed the cup by about 4 cm. Once per account:
+
+```bash
+cd ~/ament_ws && colcon build --packages-up-to stretch_core stretch_description ros2_numpy stack_cups
+pip3 install --user pyquaternion           # hello_helpers needs it
+F=$HELLO_FLEET_PATH/$HELLO_FLEET_ID/exported_urdf
+cp $F/controller_calibration_head.yaml ~/ament_ws/src/stretch_ros2/stretch_core/config/
+sed 's#"\./meshes/#"package://stretch_description/meshes/#g' $F/stretch.urdf \
+    > ~/ament_ws/src/stretch_ros2/stretch_description/urdf/stretch.urdf
+colcon build --packages-select stretch_core stretch_description
+```
+
+Suggested order:
 
 1. Start the driver with odometry TF, the head camera, and (for Nav2) the lidar:
    ```bash
@@ -196,7 +214,9 @@ purpose. Suggested order:
    ros2 launch stack_cups find_cup.launch.py config:=robot steps:=aim_head
    ros2 launch stack_cups find_cup.launch.py config:=robot steps:=aim_head,ready
    ros2 launch stack_cups find_cup.launch.py config:=robot      # all steps, grasp off
+   ros2 launch stack_cups find_cup.launch.py config:=robot grasp:=true   # grasp, lift, carry
    ```
+   After `[DONE] carrying the cup` the gripper keeps holding the cup while the driver runs.
 4. Check the values marked "verify on the robot" in `config/robot.yaml` (gripper
    positions, slowest base speed, `arm_len`, `yaw_sign`; `sim/check_robot_layer.py`
    measures the last two, and it drives the base) and update the file.
@@ -211,8 +231,10 @@ Differences between the real robot and the sim (roadmap 0.3, from the two driver
 | `odom` → `base_link` TF | only with `broadcast_odom_tf:=True` | on in `sim.launch.py` | launch argument (step 1) |
 | `map` → `odom` TF | from AMCL or SLAM | fixed by the sim driver unless `broadcast_map_tf:=False` | `sim.launch.py` turns it off (patch) |
 | Lidar | `/scan` and `/scan_filtered` | `/scan_filtered`; `/scan` added by the patch | patch |
-| Gripper position | finger angle | the sim's own scale | `gripper_open`/`gripper_closed` in `robot.yaml` are marked "verify" |
-| Closing on a cup | the goal aborts after ~10 s (the fingers never reach the target) | succeeds once the fingers stop (patch) | not handled yet: keep `grasp:=false` on the robot until roadmap 1.7 |
+| Gripper position | finger angle (rad): about 0 with the fingertips touching, 0.5 the end stop | the sim's own scale | `gripper_open` 0.45 in `robot.yaml` (about 15 cm apart) |
+| Closing on a cup | a goal the fingers cannot reach (stopped on the cup) aborts after `default_goal_timeout_s` (10 s); the gripper keeps pushing | succeeds once the fingers stop (patch) | counts as contact (`CupRobot._move_gripper`) |
+| Gripper effort | reported (a 4-cup stack stalled the fingers at -54.8) | not reported | a single Solo cup gives way, so the fingers never stop on it: contact is an effort rise of `gripper_effort_rise` over the free close |
+| Head camera pose | needs the robot's head calibration (see above) | exact | |
 | `/stop_the_robot` | does not cancel a running arm move | | a stop cancels the move itself |
 | Clock | wall time | sim time (`/clock`) | the node switches to sim time when `/clock` exists |
 
@@ -567,14 +589,20 @@ which also sizes the sim's cups).
     cylinder. Now it opens to +0.13 there and reaches; task cups still get +0.3.
   - [ ] On the robot: fit `gripper_fit_per_m` / `gripper_fit_offset` (robot finger units
     differ; 0 keeps `gripper_open`) and set `grasp_height` from the real cups.
-- [ ] **1.7 Close the gripper by effort** (partial: closes until the fingers stop on the
-      cup, then squeezes `gripper_squeeze` past that; holds a 20 g sim cup)
-  - On the robot: set `gripper_max_effort` from the effort `joint_states` reports while
-    holding a cup, and tune `gripper_squeeze` so real cups are not crushed (the sim
-    reports no gripper effort).
+  - [x] Reach `grasp_reach_past` past the measured center (robot 2.5 cm, sim 0). The
+    camera sees only the near side of the cup; on the robot the fingers closed at its
+    front and the cup slipped out.
+- [ ] **1.7 Close the gripper by effort** (partial: closes in `gripper_step`s until the
+      fingers stop on the cup or the effort rises `gripper_effort_rise` above what it read
+      closing on air, then squeezes `gripper_squeeze` past that; holds a 20 g sim cup)
+  - Robot: a 4-cup stack stopped the fingers (effort -54.8) and was carried to DONE; a
+    single Solo cup gave way and was crushed flat with no contact found, hence the
+    effort rise. Left: confirm `gripper_effort_rise` (8.0, a first guess; every closing
+    step's effort is logged) and `gripper_squeeze` (0.02) with a single cup.
 - [x] **1.8 Check the grasp worked**: the fingers must stop on something, then stay put
       while the lift rises `grasp_check_lift` (more than the grasp point's distance to
-      the cup's top). A reach blocked short of the cup fails too.
+      the cup's top), and with `gripper_effort_rise` the effort must stay above what it
+      reads closing on air. A reach blocked short of the cup fails too.
 - [x] **1.9 Lift and retract into the carry pose** (the `carry` step): the lift rises
       until the cup's bottom is `carry_clearance` above the table, the arm pulls all the
       way in, the wrist stays level so the cup stays upright, and the run fails if the
