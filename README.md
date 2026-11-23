@@ -247,7 +247,9 @@ the other joints take `move_to_pose` goals):
 In MuJoCo tests the cup is located within about 1 cm and the table within about 1 cm, and
 ALIGN lines the arm up with the cup within about 1 cm. Picking the cup up is not reliable
 yet: in 3 sim runs with `grasp:=true` (default scene) the cup was never lifted. One run
-stopped at the wrist check; in the other two the gripper closed without holding the cup
+stopped at the wrist check; in the other two the gripper closed without holding the cup.
+Opening the gripper wider (0.5, the earlier value, instead of 0.3) did not help: in 3 more
+runs the arm stopped 3.3 cm short of the cup and the gripper closed on nothing
 (roadmap 1.6-1.8).
 
 ## The task scene
@@ -269,39 +271,58 @@ Check the cups stay put without ROS: `python3 -m stack_cups.sim_scene --check`
 
 ## Navigation in the sim
 
-Work in progress (roadmap 0.8). The starter package `parcs_stretch_nav2` runs Nav2 with AMCL
-on a saved map. With the patches its launch files run on the sim (`use_sim_time:=true` skips
-the real driver and lidar), and the sim publishes `/scan` for AMCL. Still to do: make the map
-of the task scene and check Nav2 on it. In the first mapping run the robot stopped making
-progress on the last leg of its drive around the table, so no map was saved;
-`map_sim_scene.py` now logs where the robot is and gives up on a stuck leg.
+The starter package `parcs_stretch_nav2` runs Nav2 with AMCL on a saved map (roadmap 0.7,
+0.8). `stack_cups/maps/sim_task_room` is a slam_toolbox map of the task scene. The lidar
+(about 0.2 m up) sees only the table's legs, so the table top is drawn into the map as
+occupied (`sim/draw_table_on_map.py`); otherwise Nav2 plans paths under the table and the
+robot's mast hits it. (The starter's WVH setup uses a keepout map for the same reason.)
 
 Run these from `~/ws/src/cup-stacking-stretch-project`, with the sim in terminal 1
 (`ros2 launch stack_cups sim.launch.py use_mujoco_viewer:=false`).
 
-**1. Map the task scene:**
+**Navigate:**
+
+```bash
+ros2 launch stack_cups sim_nav.launch.py     # the starter's Nav2, set up for the sim
+python3 sim/nav_check.py                     # stows the arm, then drives to 3 goals
+```
+
+In the sim, Nav2 reached all three goals: the stacking area (13 s), the far side of the
+table (60 s, around the table), and back to the start (95 s). By the sim's true pose the
+robot ended 24-34 cm and at most 10° from each goal: Nav2 stops within 25 cm of where AMCL
+thinks it is, and AMCL was 13-18 cm off. Getting closer is ALIGN's job (roadmap 1.3b).
+
+Use `sim_nav.launch.py` in the sim, not the starter's `navigation.launch.py use_sim_time:=true`:
+
+- The sim publishes `/clock` but stamps its scans, odometry and TF with wall time, so Nav2
+  has to run on wall time. With `use_sim_time:=false`, the starter's file starts the real
+  robot's driver and lidar.
+- The starter's remap of Nav2's `/cmd_vel` to the driver's `/stretch/cmd_vel` is commented
+  out, so the base never moves. Check this on the real robot too.
+- The sim's base reaches only about a quarter of the commanded speed (its wheel actuators
+  have gear 3, which the sim driver's wheel-speed math leaves out, plus heavy friction; top
+  speed about 0.09 m/s). `sim_nav.launch.py` gives Nav2's progress check 30 s instead of
+  10 s and keeps it from commanding crawl speeds. `find_cup` is not affected: it steers its
+  base moves by odometry.
+- It uses the starter's `nav2_params.yaml`. The starter's default, `nav2_voxel_params.yaml`,
+  needs the spatio-temporal voxel layer plugin
+  (`sudo apt install ros-humble-spatio-temporal-voxel-layer`).
+
+Stow the arm before driving (`ros2 service call /stow_the_robot std_srvs/srv/Trigger`): in
+the sim's start pose the gripper sticks out 0.5 m on the arm side, just under the table top,
+and catches the table legs. `nav_check.py` and `map_sim_scene.py` do this first.
+
+**Map the scene again** (after changing the room or the furniture):
 
 ```bash
 ros2 launch parcs_stretch_nav2 offline_mapping.launch.py use_sim_time:=true use_rviz:=false
-python3 sim/map_sim_scene.py      # drives once around the table
-mkdir -p stack_cups/maps
+python3 sim/map_sim_scene.py      # stows the arm, drives once around the table
 ros2 run nav2_map_server map_saver_cli -f stack_cups/maps/sim_task_room \
     --ros-args -p use_sim_time:=true
+python3 sim/draw_table_on_map.py stack_cups/maps/sim_task_room.yaml
 ```
 
-Then rebuild `stack_cups` so the map is installed with the package.
-
-**2. Navigate on the map:**
-
-```bash
-ros2 launch parcs_stretch_nav2 navigation.launch.py use_sim_time:=true teleop_type:=none \
-    map:=$(ros2 pkg prefix --share stack_cups)/maps/sim_task_room.yaml \
-    params_file:=$(ros2 pkg prefix --share parcs_stretch_nav2)/config/nav2_params.yaml
-python3 sim/nav_check.py      # sets the initial pose, drives to 3 goals, checks each
-```
-
-`params_file` matters: the starter's default, `nav2_voxel_params.yaml`, needs the
-spatio-temporal voxel layer plugin (`sudo apt install ros-humble-spatio-temporal-voxel-layer`).
+Then rebuild `stack_cups` so the new map is installed.
 
 ## Tests
 
@@ -343,6 +364,10 @@ Rebuild `stretch_simulation` and `parcs_stretch_nav2` after either. They were ma
 | Rendering a camera frame held the physics lock, so frames slower than the camera rate (30 Hz) stalled physics | Hold the lock only while copying the scene; render outside it | task scene: 0.55× → 1.0× real time; slow frames now lower the camera rate instead |
 | The ROS side and the sim process both edit the shared command record, without a common lock | Share one lock | lost commands: 1 in 60 → 0 in 100 |
 | "Move the base 0 m" (sent for 1 s after `cmd_vel` stops) drove the base backward | Treat it as a stop | no more backward creep |
+
+Not fixed: the base follows `cmd_vel` at only about a quarter of the commanded speed (see
+[Navigation in the sim](#navigation-in-the-sim)). Fixing it changes how fast `find_cup`'s
+base moves go, so its sim parameters would need re-tuning.
 
 **`stretch_ros2.patch`** (the ROS driver):
 
@@ -387,8 +412,9 @@ thread, so `/stretch/joint_states`, TF and `cmd_vel` handling pause while a goal
 | `check_robot_layer.py` | Check `CupRobot` on the running sim and measure the values `find_cup` needs (moves the base, then undoes it) |
 | `nudge_base.py` | Drive the base an exact distance (to set up a start pose) |
 | `clock_rate.py` | How fast the sim runs compared with real time |
-| `map_sim_scene.py` | Drive once around the task scene's table for mapping |
-| `nav_check.py` | Navigate the task scene with Nav2 and check where the robot ends up |
+| `map_sim_scene.py` | Stow the arm, then drive once around the task scene's table for mapping |
+| `nav_check.py` | Stow the arm, navigate the task scene with Nav2 to 3 goals, and check where the robot ends up |
+| `draw_table_on_map.py` | Draw the table top (invisible to the lidar) into a saved sim map as occupied |
 | `stretch_table_scene.py` | Standalone MuJoCo scene (no ROS): Stretch + square table |
 | `cup_approach.py` | Standalone: random red cup on the table; robot drives around the table to it. `--face arm` is not reliable yet (the gripper can clip the table) |
 
@@ -406,7 +432,8 @@ ones from the `sim/` folder with `python3 <script>`.
 | `Permission denied` reading files during `colcon build` from a VM shared folder | Files are readable only by their owner on the host. On the Mac: `chmod -R go+rX <workspace>/src`. If the build fails, `ros2 run` silently runs the old installed version. |
 | Sim far slower than real time (moves time out, ALIGN needs many nudges, camera FPS low) | Apply the simulator patches (setup step 5), rebuild, and run without the viewer (`use_mujoco_viewer:=false`). `python3 sim/clock_rate.py` shows the speed. |
 | Every trajectory goal ends `ABORTED` with an empty error message | The simulator patches are not applied, or `stretch_simulation` was not rebuilt after applying them. |
-| Nav2 never becomes active, or the costmaps log a missing plugin | Pass `params_file:=.../nav2_params.yaml` (see [Navigation in the sim](#navigation-in-the-sim)). |
+| Nav2 never becomes active, or the costmaps log a missing plugin | In the sim, use `ros2 launch stack_cups sim_nav.launch.py`; on the robot, pass `params_file:=.../nav2_params.yaml` (see [Navigation in the sim](#navigation-in-the-sim)). |
+| Nav2 logs `Failed to bring up all requested nodes. Aborting bringup.` after `failed to send response to /map_server/get_state (timeout)` | A ROS 2 Humble startup race (a service reply timed out while the nodes were starting). Stop the launch and start it again. |
 | Viewer black/glitchy | Log in to Ubuntu on Xorg (not Wayland), enable GPU acceleration in the VM, give the VM more CPU cores, and use `use_mujoco_viewer:=false`. |
 
 ## Roadmap
@@ -456,12 +483,10 @@ which also sizes the sim's cups).
       runstop), step-by-step runs; see [Stopping and running step by step](#stopping-and-running-step-by-step).
 - [x] **0.7 Add `parcs_stretch_nav2` to the workspace**: in the setup steps above; its
       `simple_commander_demo.py` import is fixed by the patch.
-- [ ] **0.8 Navigation in the sim** (partial)
-  - Done: the sim publishes `/scan` for AMCL, the starter's mapping launch runs on the sim
-    (patch), and `sim/map_sim_scene.py` and `sim/nav_check.py` drive the mapping route and
-    check Nav2 goals; see [Navigation in the sim](#navigation-in-the-sim).
-  - Left: make the map of the task scene (the first run got stuck on the last leg of the
-    drive) and check Nav2 on it.
+- [x] **0.8 Navigation in the sim**: the sim publishes `/scan` for AMCL, the starter's
+      mapping launch runs on the sim (patch), `stack_cups/maps/sim_task_room` is a map of the
+      task scene, and `ros2 launch stack_cups sim_nav.launch.py` runs the starter's Nav2 on
+      it; see [Navigation in the sim](#navigation-in-the-sim).
 
 ### 1. Find the cup and pick it up
 
