@@ -223,7 +223,35 @@ class FindCup(CupRobot):
             raise RuntimeError(f"the arm was blocked before reaching the cup: {e}") from None
         if self.cfg["grasp"]:
             c = self.cfg
-            self.close_gripper(c["gripper_closed"], c["gripper_squeeze"], c["gripper_max_effort"])
+            finger, contact = self.close_gripper(c["gripper_closed"], c["gripper_squeeze"],
+                                                 c["gripper_max_effort"])
+            self.check_grasp(cup, finger, contact)
+
+    def check_grasp(self, cup, finger, contact):
+        """Roadmap 1.8: raise (so the run ends FAILED) if the gripper is not holding the cup.
+
+        1. The fingers must have stopped on something (not closed on nothing).
+        2. Lift by grasp_check_lift, which is more than the distance from the grasp point
+           to the cup's top: a cup that stayed on the table is then below the fingers, so
+           they close further. A shorter lift fails: the fingers slide up a cup that
+           stays behind and still touch it (seen in the sim).
+        The head camera's view is only logged: the arm hides part of the cup, which moves
+        its measured center up even when the cup stays put (seen in the sim)."""
+        c = self.cfg
+        joint = "joint_gripper_finger_left"
+        if not contact:
+            raise RuntimeError(f"the gripper closed on nothing (fingers at {finger:+.3f})")
+        lift0 = self.joint_pos("joint_lift")
+        self.move({"joint_lift": lift0 + c["grasp_check_lift"]})
+        after = self.wait_joint_still(joint) or self.joint_pos(joint)
+        m = self.measure_fresh()
+        seen = (f"camera: {self.camera.last_miss}" if m is None else
+                f"camera: cup center rose {float(m['cup'][2] - cup[2]) * 100:+.1f} cm")
+        self.log(f"[REACH] grasp check after a {c['grasp_check_lift'] * 100:.0f} cm lift: "
+                 f"fingers {finger:+.3f} -> {after:+.3f} ({seen})")
+        if finger - after > c["grasp_slip_tol"]:
+            raise RuntimeError(f"the cup was not lifted: the fingers closed from {finger:+.3f} "
+                               f"to {after:+.3f} while lifting (it slipped or stayed behind)")
 
     def run(self):
         try:
@@ -248,8 +276,10 @@ class FindCup(CupRobot):
                                   + (", then close the gripper" if self.cfg["grasp"] else "")):
                 self.reach(offs)
             ran = [s for s in STEPS if s in self.steps]
-            self.set_phase("DONE", "gripper is at the cup" if "reach" in self.steps
-                           else f"ran {','.join(ran)}")
+            done = "gripper is at the cup"
+            if "reach" in self.steps and self.cfg["grasp"]:
+                done = "holding the cup"
+            self.set_phase("DONE", done if "reach" in self.steps else f"ran {','.join(ran)}")
         except StopRequested as e:
             self.safe_stop()
             self.set_phase("STOPPED", str(e))

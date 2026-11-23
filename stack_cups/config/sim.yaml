@@ -34,6 +34,8 @@
     gripper_closed: -0.1
     gripper_squeeze: 0.05
     gripper_max_effort: 0.0   # the sim reports no gripper effort
+    grasp_check_lift: 0.08      # > grasp point to cup top
+    grasp_slip_tol: 0.01
     ready_above_cup: 0.25
     v_max: 0.15
     v_min: 0.06               # sim only: the sim's wheel friction stalls slower commands

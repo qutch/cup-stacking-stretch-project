@@ -33,6 +33,8 @@
     gripper_closed: -0.1      # verify on the robot: how far closing may go
     gripper_squeeze: 0.05     # verify on the robot (finger units)
     gripper_max_effort: 0.0   # verify: set from joint_states effort when gripping a cup
+    grasp_check_lift: 0.08      # > grasp point to cup top
+    grasp_slip_tol: 0.01
     ready_above_cup: 0.25
     v_max: 0.05
     v_min: 0.01               # verify on the robot: slowest command that still moves the base

@@ -47,13 +47,18 @@ FIND_CUP = {
     # box next to the red cylinder in stretch_mujoco's default scene.
     "gripper_open": 0.3,
     "gripper_closed": -0.1,  # how far closing may go (the fingers stop on the cup first)
-    # --- grasping (roadmap 1.7)
+    # --- grasping (roadmap 1.7, 1.8)
     # Squeeze this far past where the fingers touched the cup: sets the grip force
     # (the gripper is position-controlled), instead of how far "closed" is past the cup.
     "gripper_squeeze": 0.05,
     # Stop closing when |effort| passes this (robot only; the sim reports no effort).
     # 0 = close by position only.
     "gripper_max_effort": 0.0,
+    # m, lift to check the cup comes along. Must be more than the grasp point's distance
+    # below the cup's top (half a 12 cm cup at center grasps), so the fingers clear a
+    # cup that stayed on the table and close on nothing.
+    "grasp_check_lift": 0.08,
+    "grasp_slip_tol": 0.01,  # finger units: closing more than this while lifting = slipped
     "ready_above_cup": 0.25,  # m, grasp point height above the cup while driving
     # --- base moves (odometry-steered)
     "v_max": 0.15,  # m/s, base speed far from the target

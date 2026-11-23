@@ -522,8 +522,9 @@ which also sizes the sim's cups).
   - On the robot: set `gripper_max_effort` from the effort `joint_states` reports while
     holding a cup, and tune `gripper_squeeze` so real cups are not crushed (the sim
     reports no gripper effort).
-- [ ] **1.8 Check the grasp worked**: gripper position/effort, or the cup is gone from
-      the table.
+- [x] **1.8 Check the grasp worked**: the fingers must stop on something, then stay put
+      while the lift rises `grasp_check_lift` (more than the grasp point's distance to
+      the cup's top). A reach blocked short of the cup fails too.
 - [ ] **1.9 Lift and retract into the carry pose**: clear the table, arm in, wrist
       tucked, cup upright.
 - [ ] **1.10 Retry on a failed grasp**: open, back off, repeat ALIGN and REACH.
