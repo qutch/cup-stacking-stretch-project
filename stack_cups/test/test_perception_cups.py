@@ -140,3 +140,10 @@ def test_red_thresholds_are_settable():
     assert "cup" not in measure(scene)
     m = measure(scene, opts={"red": {"hue_width": 10, "sat_min": 60, "val_min": 70}})
     assert m["cup"][0] == pytest.approx(1.0, abs=0.02)
+
+
+def test_cup_height_is_measured_from_the_table():
+    img, depth, R, t = render([(1.0, 0.0, 0.04)])  # 10 cm tall
+    m = P.measure_cup(img, depth, K, K, (R, t), EYE, full=True)
+    assert m["table_top"] == pytest.approx(TABLE_Z, abs=0.005)
+    assert m["cup_height"] == pytest.approx(0.10, abs=0.01)

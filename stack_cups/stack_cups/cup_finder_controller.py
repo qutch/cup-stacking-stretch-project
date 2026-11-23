@@ -138,6 +138,8 @@ class FindCup(CupRobot):
         found = m["samples"]
         m["radius"] = float(np.median([s["radius"] for s in found]))
         if full:
+            heights = [s["cup_height"] for s in found if s.get("cup_height") is not None]
+            m["cup_height"] = float(np.median(heights)) if heights else None
             tops = [s["table_top"] for s in found if s.get("table_top") is not None]
             edges = [s["edge"] for s in found if s.get("edge") is not None]
             m["table_top"] = float(np.median(tops)) if tops else None
@@ -300,6 +302,7 @@ class FindCup(CupRobot):
                  f"radius {m['radius'] * 100:.1f} cm; table top "
                  f"{'unknown' if top is None else f'{top:.3f} m'}; table edge "
                  f"{'unknown' if edge is None else f'{edge:.3f} m'} from base center")
+        self.check_cup_height(m.get("cup_height"))
         target = np.array(cup, dtype=float)
         if self.cfg["grasp_height"] >= 0 and top is not None:
             target[2] = top + self.cfg["grasp_height"]
@@ -325,6 +328,27 @@ class FindCup(CupRobot):
             self.check_grasp(cup, finger, contact)
             return {"cup": cup, "table_top": top}
         return None
+
+    def check_cup_height(self, measured):
+        """Roadmap 1.5: compare the measured cup height (highest red point above the
+        table top) with cup_height. Off by more than cup_height_tol: a warning (wrong
+        cup_height, a cup lying down or stacked, or a cup partly hidden); with
+        cup_height_strict, a failure."""
+        c = self.cfg
+        if measured is None:
+            self.log("[REACH] cup height not measured (no table top)")
+            return
+        err = measured - c["cup_height"]
+        text = (f"cup height measured {measured * 100:.1f} cm, cup_height says "
+                f"{c['cup_height'] * 100:.1f} cm ({err * 100:+.1f} cm)")
+        if abs(err) <= c["cup_height_tol"]:
+            self.log(f"[REACH] {text}")
+            return
+        if c["cup_height_strict"]:
+            raise RuntimeError(f"{text}: more than cup_height_tol "
+                               f"({c['cup_height_tol'] * 100:.1f} cm)")
+        self.get_logger().warn(f"[REACH] {text}: check cup_height, or is the cup lying "
+                               "down, stacked or partly hidden?")
 
     def fit_opening(self, radius):
         """Roadmap 1.6: open the fingers only as wide as the cup needs (its measured width

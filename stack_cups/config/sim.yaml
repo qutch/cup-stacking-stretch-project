@@ -70,6 +70,8 @@
     sample_dt: 0.1            # sim only: one sim render
     samples: 5
     max_spread: 0.01
+    cup_height_tol: 0.03
+    cup_height_strict: false
     grasp_height: 0.06
     use_wrist_yaw: true
     max_yaw: 0.25

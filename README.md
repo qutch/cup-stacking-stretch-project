@@ -535,7 +535,9 @@ which also sizes the sim's cups).
   - Switch the driver from navigation mode to position mode for arm moves, and back.
 - [x] **1.4 Center the cup and line it up with the arm** (about ±1 cm; slow in the sim)
 - [x] **1.5 Measure the cup and table, check the reach is safe**
-  - [ ] Add a cup height measurement as a cross-check against the parameters.
+  - [x] Cup height cross-check: the cup's highest red point above the table top, against
+    `cup_height`; off by more than `cup_height_tol` (3 cm) warns, or fails with
+    `cup_height_strict`. Sim: task cup 12.3 cm (12.0), default-scene cylinder 8.1 cm (8).
 - [x] **1.6 Move the gripper to the cup**
   - [x] Grasp at a set height: `grasp_height` (0.06 m) above the measured table top. The
     measured center sat ~2.5 cm high (the camera sees the cup's top and inside more).

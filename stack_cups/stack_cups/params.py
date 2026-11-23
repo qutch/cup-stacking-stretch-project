@@ -116,6 +116,10 @@ FIND_CUP = {
     "sample_dt": 0.1,  # s between samples (one sim render)
     "samples": 5,  # measurements per position (median)
     "max_spread": 0.01,  # m, if samples spread more, take more
+    # Cross-check the measured cup height against cup_height (roadmap 1.5): off by more
+    # than this warns, or fails with cup_height_strict
+    "cup_height_tol": 0.03,
+    "cup_height_strict": False,
     # m above the table top to grasp at (roadmap 1.6): half of cup_height. The measured
     # center sits ~2.5 cm too high (the camera sees the top and inside of the cup more
     # than its lower half). < 0 = grasp at the measured center.

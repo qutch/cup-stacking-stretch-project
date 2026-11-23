@@ -314,7 +314,9 @@ def find_cups(img, depth, K_color, K_depth, T_base, T_cd, red=None, min_area=MIN
             g_uv = np.round(project(_base_to_color(group, R, t, T_cd), K_color)).astype(int)
             gx, gy = g_uv.min(axis=0)
             gw, gh = g_uv.max(axis=0) - (gx, gy) + 1
+            # its highest red point (the rim, for an upright cup; roadmap 1.5)
             cups.append({"cup": center, "radius": radius, "n": len(group),
+                         "top": float(np.percentile(group[:, 2], 98)),
                          "bbox": (int(gx), int(gy), int(gw), int(gh))})
     return cups, mask
 
@@ -372,11 +374,13 @@ def measure_cup(img, depth, K_color, K_depth, T_base, T_cd, full=True, target=No
         out["why"] = why
         return out
     cup, radius = chosen["cup"], chosen["radius"]
-    out.update(cup=cup, radius=radius, bbox=chosen["bbox"])
+    out.update(cup=cup, radius=radius, bbox=chosen["bbox"], cup_top=chosen["top"])
     if full:
         pts = to_base(backproject(depth, K_depth, step=2), R, t)
         top = estimate_table_top(pts, cup, radius)
         edge = table_edge_distance(pts, cup[0], 0.3,
                                    (top if top is not None else cup[2]) + 0.02)
         out.update(table_top=top, edge=edge)
+        if top is not None:
+            out["cup_height"] = chosen["top"] - top
     return out
