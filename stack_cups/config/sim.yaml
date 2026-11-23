@@ -19,6 +19,7 @@
     joint_tries: 5            # sim only: the unpatched sim accepts a joint within 5 cm
     aborted_ok_tol: 0.05      # sim only: the unpatched sim aborts every goal, no message
     max_base_speed: 0.3
+    max_base_turn: 1.0
     max_joint_speed_m: 0.0    # the sim ignores joint speeds
     max_joint_speed_rad: 0.0
     step_confirm: false
@@ -49,3 +50,26 @@
     arm_len: 0.270
     yaw_sign: 1.0
     yaw_check_tol: 0.010
+
+    # ---------------------------------------------------------------- carry_to_stack
+    # (roadmap task 2; also uses the cup, base-move and measuring values above)
+    carry_steps: all
+    # map poses [x, y, yaw]; the sim map's origin is the robot's start in the task scene
+    start_pose: [0.0, 0.0, 0.0]
+    loose_cups_pose: [0.2, 0.0, 0.0]
+    stacking_pose: [0.75, 0.0, 0.0]   # tape 0.4 m ahead on the arm side, in view
+    poses_checked: true
+    nav_timeout: 120.0
+    robot_radius: 0.22
+    carry_margin: 0.05
+    require_cup: true
+    held_min: 0.05
+    grip_tol: 0.05
+    tape_head_pan: -1.2
+    tape_head_tilt: -0.7
+    square_tol: 0.02
+    max_turns: 3
+    w_max: 1.0
+    w_min: 0.3                # sim only: the sim's base turns at ~1/4 of the command
+    w_decel: 0.5
+    max_reach: 0.5

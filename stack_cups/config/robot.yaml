@@ -18,6 +18,7 @@
     joint_tries: 1            # the real driver reaches its targets: no re-commanding
     aborted_ok_tol: 0.0       # an aborted move is a failure
     max_base_speed: 0.1       # m/s, hard cap while testing
+    max_base_turn: 0.3        # rad/s, hard cap while testing
     max_joint_speed_m: 0.05   # m/s for lift and arm (verify on the robot)
     max_joint_speed_rad: 0.3  # rad/s for head and wrist (verify on the robot)
     step_confirm: true        # confirm each step: Enter, or publish /stack_cups/continue
@@ -48,3 +49,27 @@
     arm_len: 0.270            # verify on the robot (sim/check_robot_layer.py measures it)
     yaw_sign: 1.0             # verify on the robot (sim/check_robot_layer.py measures it)
     yaw_check_tol: 0.010
+
+    # ---------------------------------------------------------------- carry_to_stack
+    # (roadmap task 2; also uses the cup, base-move and measuring values above)
+    carry_steps: all
+    # Map poses [x, y, yaw] on the WVH map: measure them (e.g. drive there and read
+    # ros2 run tf2_ros tf2_echo map base_link), then set poses_checked: true
+    start_pose: [0.0, 0.0, 0.0]
+    loose_cups_pose: [0.0, 0.0, 0.0]
+    stacking_pose: [0.0, 0.0, 0.0]
+    poses_checked: false      # until then the navigate step refuses to run
+    nav_timeout: 180.0
+    robot_radius: 0.22
+    carry_margin: 0.05
+    require_cup: true
+    held_min: 0.05            # verify on the robot: real finger units differ from the sim's
+    grip_tol: 0.05            # verify on the robot
+    tape_head_pan: -1.2
+    tape_head_tilt: -0.7
+    square_tol: 0.02
+    max_turns: 3
+    w_max: 0.3
+    w_min: 0.1                # verify on the robot: slowest command that still turns the base
+    w_decel: 0.3
+    max_reach: 0.5

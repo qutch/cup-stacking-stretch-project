@@ -33,6 +33,10 @@ def test_types_match_the_code_defaults(name):
         elif isinstance(default, float):
             # ROS rejects an int for a double parameter declared with a float default
             assert isinstance(value, float), f"{key}: write {value} as {float(value)}"
+        elif isinstance(default, list):
+            # a ROS double array: every element must be written as a float
+            assert isinstance(value, list) and len(value) == len(default), key
+            assert all(isinstance(v, float) for v in value), f"{key}: write {value} as floats"
         else:
             assert type(value) is type(default), key
 
@@ -48,6 +52,10 @@ def test_robot_values_are_slow_and_without_sim_workarounds():
     assert robot["max_base_speed"] <= sim["max_base_speed"]
     assert robot["v_max"] <= robot["max_base_speed"] and robot["v_max"] <= sim["v_max"]
     assert robot["max_joint_speed_m"] > 0.0 and robot["max_joint_speed_rad"] > 0.0
+    assert robot["max_base_turn"] <= sim["max_base_turn"]
+    assert robot["w_max"] <= robot["max_base_turn"] and robot["w_max"] <= sim["w_max"]
+    # the sim's map poses mean nothing on the robot's map: no navigating until measured
+    assert robot["poses_checked"] is False
 
 
 def test_both_files_use_the_same_cup():

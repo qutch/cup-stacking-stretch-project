@@ -18,6 +18,7 @@ ROBOT = {
     "aborted_ok_tol": 0.05,
     # --- safety (roadmap 0.6)
     "max_base_speed": 0.3,  # m/s, hard cap on every base speed command
+    "max_base_turn": 1.0,  # rad/s, hard cap on every base turn rate command
     # Joint speed limits passed with every arm/lift/wrist/head move; 0 = driver default.
     # The sim ignores them; on the robot they keep the first runs slow.
     "max_joint_speed_m": 0.0,  # m/s for joint_lift and wrist_extension
@@ -70,4 +71,35 @@ FIND_CUP = {
     "yaw_check_tol": 0.010,  # m, grasp point must end this close to the cup's x
 }
 
-ALL = {**ROBOT, **CUP, **FIND_CUP}
+# carry_to_stack (roadmap task 2). It also reads CUP, and FIND_CUP's base-move (v_*, decel,
+# drive_tol, align_tol, max_drives), measuring (settle_s, sample_dt, samples, max_spread)
+# and gripper_closed values.
+CARRY = {
+    # phases to run: all, or a list of localize,navigate,find_tape,square,align
+    "carry_steps": "all",
+    # --- named poses in the map frame, [x, y, yaw] (roadmap 2.2). The sim map's origin
+    # (stack_cups/maps/sim_task_room) is where the robot starts in the task scene.
+    "start_pose": [0.0, 0.0, 0.0],  # where the robot was when its driver started (odom's origin)
+    "loose_cups_pose": [0.2, 0.0, 0.0],  # next to the loose cups (for task 1.3)
+    "stacking_pose": [0.75, 0.0, 0.0],  # next to the stacking area, arm side to the table
+    "poses_checked": True,  # false: the poses are not measured on this map, so never navigate
+    "nav_timeout": 120.0,  # s for Nav2 to get there
+    # --- Nav2's outline while carrying (roadmap 2.4): the base plus the arm and the cup
+    "robot_radius": 0.22,  # m, the base (the starter's Nav2 robot_radius, arm stowed)
+    "carry_margin": 0.05,  # m, room around the cup
+    # --- the cup in the gripper (roadmap 2.5), in gripper_closed's finger units
+    "require_cup": True,  # start only with a cup in the gripper, and watch the grip
+    "held_min": 0.05,  # fingers stopped at least this far open of gripper_closed = a cup
+    "grip_tol": 0.05,  # fingers opening more than this from where they held it = let go
+    # --- finding the tape (roadmap 2.1) and parking at it (2.6)
+    "tape_head_pan": -1.2,  # rad, where to look first from stacking_pose (then the head
+    "tape_head_tilt": -0.7,  # follows the tape)
+    "square_tol": 0.02,  # rad, base parallel to the tape's edge within this
+    "max_turns": 3,
+    "w_max": 1.0,  # rad/s, base turn rate far from the target heading
+    "w_min": 0.3,  # rad/s, slowest turn command that still turns the base
+    "w_decel": 0.5,  # rad/s^2, how hard turns slow down near the target heading
+    "max_reach": 0.5,  # m, most arm extension the tape's center may need from the parking spot
+}
+
+ALL = {**ROBOT, **CUP, **FIND_CUP, **CARRY}

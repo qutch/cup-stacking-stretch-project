@@ -10,16 +10,17 @@ move_to_pose, mode switching, stop/stow, tf2_buffer and joint_state. This layer 
     5 cm, so re-command until the joint is within `tol`. With the sim patches
     (sim/patches) and on the real robot one move is enough. A blocked joint is never
     re-commanded past its target: that shoves whatever blocks it.
-  - drive_by(): move the base an exact distance in navigation mode, steered by /odom.
-    The same code works on the sim and the robot (the unpatched sim's driver cannot do
-    base position moves with translate_mobile_base).
+  - drive_by() / turn_by(): move the base an exact distance or turn it by an exact
+    angle in navigation mode, steered by /odom. The same code works on the sim and the
+    robot (the unpatched sim's driver cannot do base position moves).
   - Safety (roadmap 0.6): a stop from any of
       * Ctrl+C in the node's terminal,
       * ros2 topic pub --once /stack_cups/stop std_msgs/msg/Empty,
       * the robot's runstop button (/is_runstopped),
     sets the base speed to 0 at once, cancels the arm move in progress, calls the
-    driver's /stop_the_robot, and makes every wait raise StopRequested. Base speeds are
-    capped at max_base_speed; joint moves can carry speed limits (max_joint_speed_*);
+    driver's /stop_the_robot, and makes every wait raise StopRequested. Base speeds and
+    turn rates are capped at max_base_speed and max_base_turn; joint moves can carry
+    speed limits (max_joint_speed_*);
     confirm() pauses before a step when step_confirm is set.
 Parameters: stack_cups/params.py (ROBOT), set per platform in config/*.yaml.
 
@@ -459,6 +460,8 @@ class CupRobot(hm.HelloNode):
         return {"h": g[2] - lift, "c": -g[1] - ext, "x": g[0]}
 
     # --------------------------------------------------------------------- base
+    cmd_w = 0.0  # base turn rate command (rad/s), streamed with cmd_v
+
     def enter_navigation_mode(self):
         """Navigation mode: the base takes cmd_vel, every other joint still takes
         move_to_pose goals (HelloNode logs a 'position mode' warning for each one)."""
@@ -478,6 +481,7 @@ class CupRobot(hm.HelloNode):
     def _publish_cmd(self):
         msg = Twist()
         msg.linear.x = float(self.cmd_v)
+        msg.angular.z = float(self.cmd_w)
         self.cmd_vel_pub.publish(msg)
 
     def _stream_loop(self):
@@ -491,15 +495,16 @@ class CupRobot(hm.HelloNode):
                     return
             time.sleep(1.0 / CMD_VEL_HZ)
 
-    def drive(self, v):
-        """Set the base speed, capped at max_base_speed; the stream thread keeps re-sending
-        it to the driver. Speed 0 is always allowed; any other speed raises StopRequested
-        after a stop."""
-        if v != 0.0:
+    def drive(self, v, w=0.0):
+        """Set the base speed v (m/s) and turn rate w (rad/s), capped at max_base_speed and
+        max_base_turn; the stream thread keeps re-sending them to the driver. Stopping is
+        always allowed; any other command raises StopRequested after a stop."""
+        if v != 0.0 or w != 0.0:
             self.check_stop()
-        cap = float(self.rcfg["max_base_speed"])
+        cap, wcap = float(self.rcfg["max_base_speed"]), float(self.rcfg["max_base_turn"])
         with self._pub_lock:
             self.cmd_v = float(np.clip(v, -cap, cap))
+            self.cmd_w = float(np.clip(w, -wcap, wcap))
             self._publish_cmd()
 
     def drive_by(self, distance, *, v_max, v_min, decel, tol=0.003, stall_s=2.0,
@@ -549,3 +554,38 @@ class CupRobot(hm.HelloNode):
         finally:
             self.drive(0.0)
         return progress
+
+    def turn_by(self, angle, *, w_max, w_min, decel, tol=0.005, stall_s=3.0, timeout_s=60.0):
+        """Turn the base in place by `angle` radians (+ = counterclockwise), steered by
+        /odom. Returns the angle turned; raises RuntimeError on a stall or timeout (ROS
+        time). The command is always left at 0, even on an exception or a stop."""
+        if not self.nav_active:
+            raise RuntimeError("turn_by needs navigation mode")
+        start = self.odom_pose()
+        if start is None:
+            raise RuntimeError(f"no odometry on {self.odom_topic}")
+        t0 = stall_t = self.now()
+        turned = stall_ref = 0.0
+        try:
+            while rclpy.ok():
+                now = self.now()
+                d = self.odom_pose()[2] - start[2]
+                turned = float(np.arctan2(np.sin(d), np.cos(d)))
+                w = motion.base_speed(angle - turned, w_max, w_min, decel, tol)
+                if w == 0.0:
+                    break
+                if abs(turned - stall_ref) > 0.002:
+                    stall_ref, stall_t = turned, now
+                elif now - stall_t > stall_s:
+                    raise RuntimeError(f"base stalled turning at {turned:+.3f} of {angle:+.3f} "
+                                       f"rad (command {w:+.2f} rad/s; try a larger w_min)")
+                if now - t0 > timeout_s:
+                    raise RuntimeError(f"turn_by timed out at {turned:+.3f} of {angle:+.3f} rad")
+                if self.clock_stalled():
+                    raise RuntimeError(f"the ROS clock stopped for {CLOCK_STALL_S:.0f} s "
+                                       f"during turn_by (did the sim freeze?)")
+                self.drive(0.0, w)
+                self._idle(1.0 / DRIVE_HZ)
+        finally:
+            self.drive(0.0)
+        return turned
