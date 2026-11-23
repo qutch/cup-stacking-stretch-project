@@ -37,6 +37,7 @@
     grasp_slip_tol: 0.01
     carry_clearance: 0.05
     carry_wrist_yaw: 0.0       # straight: see params.py
+    grasp_tries: 3
     ready_above_cup: 0.05     # higher hides the cup from the head camera
     v_max: 0.05
     v_min: 0.01               # verify on the robot: slowest command that still moves the base

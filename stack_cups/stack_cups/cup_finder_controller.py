@@ -51,6 +51,10 @@ GRASP_FRAME = "link_grasp_center"
 STEPS = ("aim_head", "ready", "align", "reach", "carry")
 
 
+class GraspFailed(RuntimeError):
+    """The gripper did not get or keep the cup; worth backing off and trying again."""
+
+
 class FindCup(CupRobot):
     def __init__(self):
         super().__init__()
@@ -220,7 +224,7 @@ class FindCup(CupRobot):
             self.move_joint_precise("wrist_extension", plan["extension"], (0.0, 0.52))
         except JointBlocked as e:
             # e.g. a finger hit the cup: closing here would knock it over or miss it
-            raise RuntimeError(f"the arm was blocked before reaching the cup: {e}") from None
+            raise GraspFailed(f"the arm was blocked before reaching the cup: {e}") from None
         if self.cfg["grasp"]:
             c = self.cfg
             finger, contact = self.close_gripper(c["gripper_closed"], c["gripper_squeeze"],
@@ -260,7 +264,7 @@ class FindCup(CupRobot):
         c = self.cfg
         joint = "joint_gripper_finger_left"
         if not contact:
-            raise RuntimeError(f"the gripper closed on nothing (fingers at {finger:+.3f})")
+            raise GraspFailed(f"the gripper closed on nothing (fingers at {finger:+.3f})")
         lift0 = self.joint_pos("joint_lift")
         self.move({"joint_lift": lift0 + c["grasp_check_lift"]})
         after = self.wait_joint_still(joint) or self.joint_pos(joint)
@@ -270,8 +274,8 @@ class FindCup(CupRobot):
         self.log(f"[REACH] grasp check after a {c['grasp_check_lift'] * 100:.0f} cm lift: "
                  f"fingers {finger:+.3f} -> {after:+.3f} ({seen})")
         if finger - after > c["grasp_slip_tol"]:
-            raise RuntimeError(f"the cup was not lifted: the fingers closed from {finger:+.3f} "
-                               f"to {after:+.3f} while lifting (it slipped or stayed behind)")
+            raise GraspFailed(f"the cup was not lifted: the fingers closed from {finger:+.3f} "
+                              f"to {after:+.3f} while lifting (it slipped or stayed behind)")
 
     def carry(self, grasp):
         """Roadmap 1.9: lift the cup clear of the table, pull the arm in, keep it upright.
@@ -279,7 +283,7 @@ class FindCup(CupRobot):
         The lift rises until the cup's bottom is carry_clearance above the table top (the
         cup's bottom is estimated from its measured center and cup_height). The wrist stays
         level (pitch and roll 0), so the cup stays upright, and turns to carry_wrist_yaw.
-        Raises RuntimeError if the fingers close further on the way (the cup dropped)."""
+        Raises GraspFailed if the fingers close further on the way (the cup dropped)."""
         c = self.cfg
         joint = "joint_gripper_finger_left"
         self.set_phase("CARRY", "lifting the cup clear of the table and pulling the arm in")
@@ -300,8 +304,14 @@ class FindCup(CupRobot):
                  f"{self.joint_pos('wrist_extension'):.3f} m, "
                  f"fingers {finger:+.3f} -> {after:+.3f}")
         if finger - after > c["grasp_slip_tol"]:
-            raise RuntimeError(f"dropped the cup while carrying: the fingers closed from "
-                               f"{finger:+.3f} to {after:+.3f}")
+            raise GraspFailed(f"dropped the cup while carrying: the fingers closed from "
+                              f"{finger:+.3f} to {after:+.3f}")
+
+    def back_off(self):
+        """Roadmap 1.10: after a failed grasp, open the gripper and pull the arm in so the
+        next attempt starts clear of the cup (READY then sets the lift and wrist)."""
+        self.move({"joint_gripper_finger_left": self.cfg["gripper_open"]})
+        self.move({"wrist_extension": 0.0})
 
     def run(self):
         try:
@@ -313,7 +323,19 @@ class FindCup(CupRobot):
             self.enter_navigation_mode()
             if self.cfg["aim_head"] and self.step("aim_head", "point the head at the table"):
                 self.aim_head()
-            self.pick_attempt()
+            # Retry a failed grasp from READY (roadmap 1.10); READY re-measures the cup
+            tries = (max(1, int(self.cfg["grasp_tries"]))
+                     if self.cfg["grasp"] and "ready" in self.steps else 1)
+            for attempt in range(1, tries + 1):
+                try:
+                    self.pick_attempt()
+                    break
+                except GraspFailed as e:
+                    if attempt == tries:
+                        raise GraspFailed(f"{e} (attempt {attempt} of {tries})") from None
+                    self.set_phase("RETRY", f"attempt {attempt} of {tries} failed: {e}; "
+                                            "opening the gripper and backing off")
+                    self.back_off()
             ran = [s for s in STEPS if s in self.steps]
             done = "gripper is at the cup"
             if "reach" in self.steps and self.cfg["grasp"]:

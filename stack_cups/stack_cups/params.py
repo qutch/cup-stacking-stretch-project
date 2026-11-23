@@ -59,11 +59,12 @@ FIND_CUP = {
     # cup that stayed on the table and close on nothing.
     "grasp_check_lift": 0.08,
     "grasp_slip_tol": 0.01,  # finger units: closing more than this while lifting = slipped
-    # --- carry pose (roadmap 1.9)
+    # --- carry pose and retries (roadmap 1.9, 1.10)
     "carry_clearance": 0.05,  # m, cup bottom above the table top before the arm pulls in
     # Wrist yaw while carrying (rad). 0 = straight out; the cup then sits ~0.4 m from the
     # base center, outside Nav2's 0.22 m robot_radius (roadmap 2.4).
     "carry_wrist_yaw": 0.0,
+    "grasp_tries": 3,  # attempts before giving up; a failed one opens and backs off first
     # m, grasp point height above the cup's center while driving (arm retracted, so not
     # over the table). Keep it low: at 0.25 m the raised gripper sat between the head
     # camera and a cup on a 74 cm table, so ALIGN lost the cup after the first drive.

@@ -539,7 +539,9 @@ which also sizes the sim's cups).
       fingers close further on the way (the cup dropped).
   - [ ] Tuck the wrist (`carry_wrist_yaw`, 0 = straight for now): the cup then sits about
     0.4 m from the base center, outside Nav2's 0.22 m `robot_radius` (see 2.4).
-- [ ] **1.10 Retry on a failed grasp**: open, back off, repeat ALIGN and REACH.
+- [x] **1.10 Retry on a failed grasp**: a blocked reach, closing on nothing, a slip in
+      the grasp check or a drop while carrying opens the gripper, pulls the arm in and
+      repeats READY, ALIGN, REACH and CARRY, up to `grasp_tries` (3) attempts.
 
 ### 2. Drive to the stacking area with the cup
 
