@@ -338,6 +338,12 @@ class CarryToStack(CupRobot):
         # last few cm. Base drives alone did not settle: at the sim's full base speed, short
         # drives ended 1-3 cm from their target and 3 drives were not enough (2 of 2 runs).
         # The wrist turns about a vertical axis, so the cup stays upright.
+        yaw = self.joint_pos("joint_wrist_yaw")
+        if self.cfg["use_wrist_yaw"] and (yaw is None or abs(yaw) > self.cfg["max_yaw"]):
+            # e.g. a stowed arm (wrist tucked at ~3 rad): the turn would swing the gripper out
+            raise RuntimeError(f"the wrist yaw is {yaw}, not straight: ALIGN expects task 1's "
+                               f"carry pose (wrist within max_yaw "
+                               f"{self.cfg['max_yaw']:.2f} rad of straight)")
         return align_arm(self, self.tape_fresh, offs, self.cfg, key="tape",
                          why_lost=lambda: self.camera.last_miss)
 
