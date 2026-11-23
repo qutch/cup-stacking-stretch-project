@@ -33,6 +33,7 @@ Stop at any time: Ctrl+C, ros2 topic pub --once /stack_cups/stop std_msgs/msg/Em
 robot's runstop button. With step_confirm, each step waits for Enter or /stack_cups/continue.
 """
 
+import sys
 import time
 
 import cv2
@@ -43,7 +44,7 @@ from stack_cups import params
 from stack_cups import perception as P
 from stack_cups.align import align_arm, odom_note
 from stack_cups.head_camera import HeadCamera
-from stack_cups.robot import CupRobot, StopRequested
+from stack_cups.robot import CupRobot, JointBlocked, StopRequested
 
 BASE_FRAME = "base_link"
 GRASP_FRAME = "link_grasp_center"
@@ -148,9 +149,15 @@ class FindCup(CupRobot):
                         f"min {np.nanmin(d):.2f} m). The sim's GPU renderer is not producing "
                         "depth; restart the sim with: export MUJOCO_GL=osmesa")
                 return
+            odom_missing = self.odom_pose() is None
+            if odom_missing and len(missing) == 1 and self.now() - t0 > 5:
+                # odometry comes at 30 Hz as soon as the driver runs: don't wait 30 s for it
+                raise RuntimeError(f"no odometry on {self.odom_topic} after 5 s (the camera is "
+                                   "fine) - is the driver running, and is odom_topic right?")
             if self.now() - t0 > 30 or time.time() - w0 > 120:
-                raise RuntimeError(f"no {', '.join(missing)} after 30 s - was the sim launched "
-                                   "with use_cameras:=true?")
+                hint = (" - was the sim launched with use_cameras:=true?"
+                        if len(missing) > odom_missing else "")
+                raise RuntimeError(f"no {', '.join(missing)} after 30 s{hint}")
             self._idle(0.2)  # honours stop requests, keeps the OpenCV windows alive
 
     def aim_head(self):
@@ -208,8 +215,12 @@ class FindCup(CupRobot):
             raise RuntimeError(f"not safe to reach: {why}")
         self.log(f"plan: lift {plan['lift']:.3f} m (grasp height {plan['grasp_z']:.3f} m), "
                  f"extend {plan['extension']:.3f} m")
-        self.move_joint_precise("joint_lift", plan["lift"], (0.0, 1.1))
-        self.move_joint_precise("wrist_extension", plan["extension"], (0.0, 0.52))
+        try:
+            self.move_joint_precise("joint_lift", plan["lift"], (0.0, 1.1))
+            self.move_joint_precise("wrist_extension", plan["extension"], (0.0, 0.52))
+        except JointBlocked as e:
+            # e.g. a finger hit the cup: closing here would knock it over or miss it
+            raise RuntimeError(f"the arm was blocked before reaching the cup: {e}") from None
         if self.cfg["grasp"]:
             self.move({"joint_gripper_finger_left": self.cfg["gripper_closed"]})
 
@@ -265,6 +276,8 @@ def main():
             node.safe_stop()  # ROS is still up here (see CupRobot.start)
         cv2.destroyAllWindows()
         rclpy.try_shutdown()
+    # exit code for scripts: 0 only when every requested step finished
+    sys.exit(0 if node.phase == "DONE" else 1)
 
 
 if __name__ == "__main__":

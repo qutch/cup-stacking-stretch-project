@@ -422,8 +422,9 @@ class CupRobot(hm.HelloNode):
         The unpatched sim reports success once a joint is within 5 cm, so re-command with
         the remaining error added until it is within `tol` (at most `tries` moves,
         default the joint_tries parameter), then send the true target so it does not
-        creep past. If something blocks the joint (JointBlocked), stop correcting:
-        commanding past the target would only shove what is in the way."""
+        creep past. If something blocks the joint, stop correcting (commanding past the
+        target would only shove what is in the way) and raise JointBlocked. Raises
+        RuntimeError if the joint is still off after all tries."""
         tries = int(tries or self.rcfg["joint_tries"])
         cmd = target
         for _ in range(tries):
@@ -444,16 +445,16 @@ class CupRobot(hm.HelloNode):
                     self.move({joint: target})
                 return
             if blocked is not None:
-                self.get_logger().warn(f"{joint} is blocked {err * 100:+.1f} cm short of "
-                                       f"{target:.3f}; not pushing harder ({blocked})")
                 if cmd != target:
                     try:
                         self.move({joint: target})
                     except JointBlocked:
                         pass  # still blocked; it now pushes only toward the true target
-                return
+                raise JointBlocked(f"{joint} blocked {err * 100:+.1f} cm short of "
+                                   f"{target:.3f} (something is in the way): {blocked}")
             cmd += err
-        self.get_logger().warn(f"{joint} did not get within {tol * 100:.0f} cm of {target:.3f}")
+        raise RuntimeError(f"{joint} did not get within {tol * 100:.1f} cm of {target:.3f} "
+                           f"in {tries} moves (last {err * 100:+.1f} cm off)")
 
     # ----------------------------------------------------------------------- TF
     def lookup(self, target, source):
