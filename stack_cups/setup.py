@@ -30,6 +30,7 @@ setup(
     entry_points={
         "console_scripts": [
             "find_cup = stack_cups.cup_finder_controller:main",
+            "carry_to_stack = stack_cups.carry_to_stack:main",
             "check_interfaces = stack_cups.check_interfaces:main",
             "sim_scene = stack_cups.sim_scene:main",
         ],
