@@ -201,6 +201,20 @@ purpose. Suggested order:
 4. Check the values marked "verify on the robot" in `config/robot.yaml` (gripper
    positions, slowest base speed, `arm_len`, `yaw_sign`; `sim/check_robot_layer.py`
    measures the last two, and it drives the base) and update the file.
+5. For Nav2 (`carry_to_stack`, `find_cup`'s navigate step), with the driver and lidar from
+   step 1 running:
+   ```bash
+   ros2 launch stack_cups robot_nav.launch.py use_rviz:=true    # the starter's WVH map
+   ```
+   It runs the starter's Nav2 bringup with Nav2's `/cmd_vel` sent to the driver's
+   `/stretch/cmd_vel` (the starter's `navigation.launch.py` has that remap commented out,
+   so Nav2 never moves the base), on wall time, and slower than the starter allows (0.15
+   m/s, 0.5 rad/s) while carrying a cup. Give AMCL the robot's pose once in RViz
+   (2D Pose Estimate). Uses the starter's `nav2_params.yaml` (lidar only, as tested in the
+   sim); `params_file:=.../nav2_voxel_params.yaml` adds the WVH keepout zones (needs the
+   spatio-temporal voxel layer plugin; its `robot_radius` is 0.27 m, so set ours to match).
+   In the sim, `carry_to_stack` with this file instead of `sim_nav.launch.py` parked the cup
+   0.3 cm from the line.
 
 Differences between the real robot and the sim (roadmap 0.3, from the two drivers' code;
 `check_interfaces` passes on the sim):
@@ -321,7 +335,9 @@ Use `sim_nav.launch.py` in the sim, not the starter's `navigation.launch.py use_
   has to run on wall time. With `use_sim_time:=false`, the starter's file starts the real
   robot's driver and lidar.
 - The starter's remap of Nav2's `/cmd_vel` to the driver's `/stretch/cmd_vel` is commented
-  out, so the base never moves. Check this on the real robot too.
+  out, so the base never moves. The real driver also listens only on `/stretch/cmd_vel`;
+  on the robot, `robot_nav.launch.py` adds the remap (see
+  [First runs on the real robot](#first-runs-on-the-real-robot)).
 - The sim's base used to reach only about a quarter of the commanded speed (a wheel gear
   the sim driver left out; fixed in `stretch_mujoco.patch`). `sim_nav.launch.py` still
   gives Nav2's progress check 30 s instead of 10 s and keeps it from commanding crawl
@@ -410,7 +426,7 @@ turns, wrist yaw, measuring, tape colour and Nav2 time limit use `find_cup`'s va
 | `robot_radius`, `carry_margin` | `0.22`, `0.05` m | Nav2's outline: the stowed base, and the room around the cup while carrying |
 | `held_min`, `grip_tol` | `0.05`, `0.05` | A cup is held if the fingers stopped `held_min` short of closed; it is lost if they close that far, or open by `grip_tol` |
 | `tape_head_pan`, `tape_head_tilt` | `-1.2`, `-0.7` rad | Where the head looks for the tape first |
-| `tape_square_tol`, `tape_square_tries` | `0.02` rad, `3` | Parallel enough to the tape, and turns to get there |
+| `tape_square_tol`, `tape_square_tries` | `0.02` rad, `5` | Parallel enough to the tape, and turns to get there |
 | `w_decel` | `0.5` | How hard turns slow down near the target heading (`w_max`, `w_min` are `find_cup`'s) |
 | `reach_target`, `reach_tol` | `0.31`, `0.12` m | Arm extension that should reach the area's center from where the robot parks; sidestep if it is off by more than `reach_tol` |
 | `max_reach` | `0.5` m | Most arm extension the area's center may need in the end |
@@ -426,8 +442,10 @@ with a sidestep); opening the gripper while Nav2 drove stopped the robot at once
 held. Nav2 stops about 25 cm short; the camera does the rest. After the merge, base drives
 alone ended 1-3 cm off and ALIGN failed in 2 of 2 runs, hence the wrist.
 
-On the real robot: measure `start_pose` and `stacking_pose` on the WVH map (drive there and
-read `ros2 run tf2_ros tf2_echo map base_link`), set `poses_checked: true`, and check the
+On the real robot: run Nav2 with `ros2 launch stack_cups robot_nav.launch.py` (step 5 of
+[First runs on the real robot](#first-runs-on-the-real-robot)), measure `start_pose` and
+`stacking_pose` on the WVH map (drive there and read
+`ros2 run tf2_ros tf2_echo map base_link`), set `poses_checked: true`, and check the
 gripper values (`held_min`, `grip_tol`) like the other "verify" values in `robot.yaml`.
 
 ## Tests
