@@ -89,6 +89,26 @@ class StopRequested(RuntimeError):
     """Someone asked the robot to stop (stop topic, runstop button or Ctrl+C)."""
 
 
+def _cancel(handle):
+    """Cancel an accepted goal; never raises (ROS may already be shutting down)."""
+    try:
+        handle.cancel_goal_async()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _cancel_when_accepted(future):
+    """Cancel the goal of a pending send_goal future as soon as it is accepted."""
+    def done(f):
+        try:
+            handle = f.result()
+        except Exception:  # noqa: BLE001 - the send itself failed: nothing to cancel
+            return
+        if handle is not None and handle.accepted:
+            _cancel(handle)
+    future.add_done_callback(done)
+
+
 class CupRobot(hm.HelloNode):
     def __init__(self):
         # HelloNode creates the actual ROS node in main(); see start()
@@ -297,17 +317,24 @@ class CupRobot(hm.HelloNode):
             raise RuntimeError(f"invalid move (see the move_to_pose error above): {pose}")
         try:
             handle = self.wait_future(future, timeout)
-        except StopRequested:
+        except BaseException:
             # stopped before the goal was even accepted: cancel it as soon as it is
-            future.add_done_callback(
-                lambda f: f.result().cancel_goal_async() if f.result() and f.result().accepted
-                else None)
+            _cancel_when_accepted(future)
             raise
-        if handle is None or not handle.accepted:
-            raise RuntimeError(f"move rejected or not answered in {timeout:.0f} s: {pose}")
+        if handle is None:
+            # not answered in time, but it may still be accepted later: don't let it run
+            _cancel_when_accepted(future)
+            raise RuntimeError(f"move not answered in {timeout:.0f} s: {pose}")
+        if not handle.accepted:
+            raise RuntimeError(f"move rejected: {pose}")
         self._goal = handle
         try:
             result = self.wait_future(handle.get_result_async(), timeout)
+            if result is None:
+                _cancel(handle)  # timed out: stop the joints instead of leaving them moving
+        except BaseException:
+            _cancel(handle)
+            raise
         finally:
             self._goal = None
         if result is None:
