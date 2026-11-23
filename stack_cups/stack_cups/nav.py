@@ -144,28 +144,30 @@ class Nav2:
         goal.pose.pose.position.x, goal.pose.pose.position.y = float(pose[0]), float(pose[1])
         goal.pose.pose.orientation.z = math.sin(pose[2] / 2.0)
         goal.pose.pose.orientation.w = math.cos(pose[2] / 2.0)
-        handle = robot.wait_future(self.client.send_goal_async(goal), 10.0)
-        if handle is None or not handle.accepted:
-            raise RuntimeError(f"Nav2 did not accept {name} {tuple(pose)}")
-        result = handle.get_result_async()
-        # Nav2 sends the base commands now; CupRobot's own stream would fight them
-        streaming, robot.nav_active = robot.nav_active, False
-        t0 = robot.now()
+        # Nav2 sends the base commands now: the driver in navigation mode, and CupRobot's
+        # own cmd_vel stream off (it would fight Nav2's)
+        robot.set_driver_mode("nav2")
         try:
-            while not result.done():
-                if check is not None:
-                    check()
-                if robot.now() - t0 > timeout:
-                    raise RuntimeError(f"Nav2 did not reach {name} in {timeout:.0f} s")
-                if robot.clock_stalled():
-                    raise RuntimeError("the ROS clock stopped while Nav2 was driving")
-                robot._idle(0.1)
-        except BaseException:  # a stop, Ctrl+C, a failed check: stop Nav2 driving
-            handle.cancel_goal_async()
-            robot.drive(0.0)
-            raise
+            handle = robot.wait_future(self.client.send_goal_async(goal), 10.0)
+            if handle is None or not handle.accepted:
+                raise RuntimeError(f"Nav2 did not accept {name} {tuple(pose)}")
+            result = handle.get_result_async()
+            t0 = robot.now()
+            try:
+                while not result.done():
+                    if check is not None:
+                        check()
+                    if robot.now() - t0 > timeout:
+                        raise RuntimeError(f"Nav2 did not reach {name} in {timeout:.0f} s")
+                    if robot.clock_stalled():
+                        raise RuntimeError("the ROS clock stopped while Nav2 was driving")
+                    robot._idle(0.1)
+            except BaseException:  # a stop, Ctrl+C, a failed check: stop Nav2 driving
+                handle.cancel_goal_async()
+                robot.drive(0.0)
+                raise
         finally:
-            robot.nav_active = streaming
+            robot.set_driver_mode("navigation")
         status = result.result().status
         if status != GoalStatus.STATUS_SUCCEEDED:
             raise RuntimeError(f"Nav2 {STATUS.get(status, f'status {status}')} on the way "

@@ -30,6 +30,20 @@ def test_yaw_for_offset():
     assert M.yaw_for_offset(0.0, 0.2, 0.25, sign=1.0) == 0.0
 
 
+def test_yaw_for_offset_from_a_turned_wrist():
+    L = 0.27
+    for sign in (1.0, -1.0):
+        for yaw0, dx in ((0.2, 0.03), (0.2, -0.03), (-0.1, 0.02)):
+            yaw = M.yaw_for_offset(dx, L, 0.5, sign, current_yaw=yaw0)
+            # the grasp point moves by exactly dx from where it was
+            moved = sign * L * (np.sin(yaw) - np.sin(yaw0))
+            assert moved == pytest.approx(dx)
+    # staying put keeps the yaw
+    assert M.yaw_for_offset(0.0, L, 0.5, 1.0, current_yaw=0.2) == pytest.approx(0.2)
+    # the reach limit counts from straight, not from the current yaw
+    assert M.yaw_for_offset(0.05, L, 0.25, 1.0, current_yaw=0.2) is None
+
+
 def test_robust_center_rejects_spread():
     pts = np.array([[0.50, -0.6, 0.8]] * 4 + [[0.53, -0.6, 0.8]])
     c, spread, ok = M.robust_center(pts, max_spread=0.01)

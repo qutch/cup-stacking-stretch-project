@@ -16,6 +16,14 @@ def load(name):
         return yaml.safe_load(f)["/**"]["ros__parameters"]
 
 
+def test_no_parameter_name_is_used_twice():
+    # All nodes read one namespace (/** in config/*.yaml), and a YAML file keeps only the
+    # last of two equal keys, so a name in two sections would silently share one value
+    sections = [v for k, v in vars(params).items() if k.isupper() and k != "ALL"
+                and isinstance(v, dict)]
+    assert sum(len(s) for s in sections) == len(params.ALL)
+
+
 @pytest.mark.parametrize("name", ["sim.yaml", "robot.yaml"])
 def test_every_parameter_is_set_and_no_unknown_ones(name):
     values = load(name)
@@ -52,8 +60,8 @@ def test_robot_values_are_slow_and_without_sim_workarounds():
     assert robot["max_base_speed"] <= sim["max_base_speed"]
     assert robot["v_max"] <= robot["max_base_speed"] and robot["v_max"] <= sim["v_max"]
     assert robot["max_joint_speed_m"] > 0.0 and robot["max_joint_speed_rad"] > 0.0
-    assert robot["max_base_turn"] <= sim["max_base_turn"]
-    assert robot["w_max"] <= robot["max_base_turn"] and robot["w_max"] <= sim["w_max"]
+    assert robot["max_turn_rate"] <= sim["max_turn_rate"]
+    assert robot["w_max"] <= robot["max_turn_rate"] and robot["w_max"] <= sim["w_max"]
     # the sim's map poses mean nothing on the robot's map: no navigating until measured
     assert robot["poses_checked"] is False
 

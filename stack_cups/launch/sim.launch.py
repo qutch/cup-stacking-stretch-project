@@ -3,6 +3,9 @@ red cups standing upright, and blue tape marking the stacking area.
 
     ros2 launch stack_cups sim.launch.py                       # 6 loose cups
     ros2 launch stack_cups sim.launch.py cups:=pyramid         # a finished 3-2-1 pyramid
+    ros2 launch stack_cups sim.launch.py cups:=single          # one loose cup (grasp tests)
+    ros2 launch stack_cups sim.launch.py cups:=touching        # two loose cups rim to rim
+    ros2 launch stack_cups sim.launch.py cups:=mixed           # 3 loose, 3 placed in the tape
     ros2 launch stack_cups sim.launch.py seed:=4               # random loose-cup layout
     ros2 launch stack_cups sim.launch.py scene:=default        # stretch_mujoco's own scene
     ros2 launch stack_cups sim.launch.py use_mujoco_viewer:=false   # faster, no window
@@ -74,7 +77,8 @@ def generate_launch_description():
     return LaunchDescription(
         [DeclareLaunchArgument("scene", default_value="task",
                                description="task, default, or a path to an MJCF scene"),
-         DeclareLaunchArgument("cups", default_value="upright", choices=["upright", "pyramid"]),
+         DeclareLaunchArgument("cups", default_value="upright",
+                               choices=["upright", "pyramid", "single", "touching", "mixed"]),
          DeclareLaunchArgument("seed", default_value="",
                                description="random loose-cup layout; empty = fixed layout"),
          DeclareLaunchArgument("config", default_value="sim",

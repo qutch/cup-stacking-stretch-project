@@ -2,8 +2,9 @@
 so it is easy to test.
 
 The stacking area is a rectangle outlined with blue tape on the table. From one color +
-depth frame: the blue pixels, the depth points that land on them (moved into base_link),
-only those at the tape's height, then the smallest rectangle around them
+depth frame: the tape-coloured pixels (perception.tape_mask, the same colour that find_cup
+uses to skip placed cups; the tape_* parameters), the depth points that land on them (moved
+into base_link), only those at the tape's height, then the smallest rectangle around them
 (cv2.minAreaRect). That gives the area's center and the direction of its edges, also when
 part of the tape is hidden (e.g. by the cup in the gripper): the rectangle only needs the
 tape's corners.
@@ -14,16 +15,8 @@ import numpy as np
 
 from stack_cups import perception as P
 
-# HSV range of the blue tape. The sim's tape is RGB (0.10, 0.35, 0.90): hue ~109 of 180.
-BLUE_RANGE = ((95, 120, 50), (130, 255, 255))
 MIN_POINTS = 50  # depth points on the tape needed for a measurement
 PLANE_TOL = 0.02  # m: keep tape points this close to their median height
-
-
-def blue_mask(bgr):
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    lo, hi = BLUE_RANGE
-    return cv2.inRange(hsv, np.array(lo, np.uint8), np.array(hi, np.uint8))
 
 
 def fold_direction(angle):
@@ -44,11 +37,12 @@ def rectangle_edges(corners):
     return a2, l2, l1
 
 
-def tape_points(img, depth, K_color, K_depth, T_base, T_cd, step=2):
-    """Nx3 base_link points of the depth image that land on blue pixels of the color image,
-    and the blue mask. T_base: (R, t) depth optical -> base_link; T_cd: depth optical ->
-    color optical (the two cameras sit a little apart)."""
-    mask = blue_mask(img)
+def tape_points(img, depth, K_color, K_depth, T_base, T_cd, step=2, colour=None):
+    """Nx3 base_link points of the depth image that land on tape-coloured pixels of the
+    color image, and the tape mask. T_base: (R, t) depth optical -> base_link; T_cd: depth
+    optical -> color optical (the two cameras sit a little apart). colour: tape_mask's
+    hue_min, hue_max, sat_min, val_min (default: perception.TAPE)."""
+    mask = P.tape_mask(img, **(colour or {}))
     pts = P.backproject(depth, K_depth, step=step)
     if len(pts) == 0:
         return np.zeros((0, 3)), mask
@@ -60,15 +54,16 @@ def tape_points(img, depth, K_color, K_depth, T_base, T_cd, step=2):
     return P.to_base(pts[on_blue], *T_base), mask
 
 
-def locate_tape(img, depth, K_color, K_depth, T_base, T_cd, step=2, min_points=MIN_POINTS):
-    """The taped area from one color + depth frame.
+def locate_tape(img, depth, K_color, K_depth, T_base, T_cd, step=2, min_points=MIN_POINTS,
+                colour=None):
+    """The taped area from one color + depth frame (colour: see tape_points).
 
     Returns a dict with img and mask, and when the tape was found: tape (the area's center
     in base_link; z = the tape's height), yaw (direction of the edge closest to base_link's
     x axis, in [-pi/4, pi/4]; turning the base by yaw makes it parallel to that edge),
     length (of that edge, m), width (of the other edge, m), corners (4x2 base_link xy) and
     n (points used). Otherwise "why" says what went wrong."""
-    pts, mask = tape_points(img, depth, K_color, K_depth, T_base, T_cd, step)
+    pts, mask = tape_points(img, depth, K_color, K_depth, T_base, T_cd, step, colour)
     out = {"img": img, "mask": mask}
     if len(pts) < min_points:
         out["why"] = (f"too little blue tape in view ({int(np.count_nonzero(mask))} blue pixels, "

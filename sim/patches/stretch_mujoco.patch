@@ -1,5 +1,5 @@
 diff --git a/stretch_mujoco/mujoco_server.py b/stretch_mujoco/mujoco_server.py
-index e5abc8e..7e33571 100644
+index e5abc8e..2d568aa 100644
 --- a/stretch_mujoco/mujoco_server.py
 +++ b/stretch_mujoco/mujoco_server.py
 @@ -5,7 +5,7 @@ import os
@@ -41,7 +41,28 @@ index e5abc8e..7e33571 100644
          start_pose = self.start_pose[-1]
          sign = 1 if theta_inc > 0 else -1
          if not abs(start_pose - self.get_base_pose()[-1]) <= abs(theta_inc):
-@@ -368,6 +377,12 @@ class MujocoServer:
+@@ -172,8 +181,18 @@ class BaseController:
+             omega: float, angular velocity
+         """
+         w_left, w_right = utils.diff_drive_inv_kinematics(v_linear, omega)
+-        self.mujoco_server.mjdata.actuator(Actuators.left_wheel_vel.name).ctrl = w_left
+-        self.mujoco_server.mjdata.actuator(Actuators.right_wheel_vel.name).ctrl = w_right
++        # [stack_cups patch] The wheel actuators are velocity actuators with gear 3: they
++        # drive gear * wheel speed toward ctrl, so ctrl must be the wheel speed times the
++        # gear (the base ran at 1/3 of the command), and ctrlrange (+-6) must allow it.
++        model = self.mujoco_server.mjmodel
++        for name, w in ((Actuators.left_wheel_vel.name, w_left),
++                        (Actuators.right_wheel_vel.name, w_right)):
++            act = model.actuator(name)
++            ctrl = w * act.gear[0]
++            limit = max(abs(act.ctrlrange[0]), abs(act.ctrlrange[1]))
++            if abs(ctrl) > limit:
++                act.ctrlrange[:] = (-abs(ctrl), abs(ctrl))
++            self.mujoco_server.mjdata.actuator(name).ctrl = ctrl
+ 
+ 
+ class MujocoServer:
+@@ -368,6 +387,12 @@ class MujocoServer:
              "This is headless mode. Use MujocoServerPassive or MujocoServerManaged to run the UI simulator."
          )
  
@@ -54,7 +75,7 @@ index e5abc8e..7e33571 100644
      def _physics_step(self, lock: contextlib.AbstractContextManager):
          """
          Calls mj_step and _ctrl_callback, and sleeps until the next timestep.
-@@ -375,10 +390,23 @@ class MujocoServer:
+@@ -375,10 +400,23 @@ class MujocoServer:
          start_time = time.perf_counter()
  
          with lock:
@@ -79,7 +100,7 @@ index e5abc8e..7e33571 100644
          if time_until_next_step > 0:
              # Sleep to match the timestep.
              time.sleep(time_until_next_step)
-@@ -459,8 +487,17 @@ class MujocoServer:
+@@ -459,8 +497,17 @@ class MujocoServer:
              return
  
          self.physics_fps_counter.tick(sim_time=data.time)

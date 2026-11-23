@@ -11,6 +11,7 @@ import math
 import numpy as np
 import pytest
 
+from stack_cups import perception as P
 from stack_cups import tape as T
 
 W, H = 424, 240
@@ -68,10 +69,10 @@ def locate(**kw):
     return T.locate_tape(img, depth, K, K, (R, t), (np.eye(3), np.zeros(3)))
 
 
-def test_blue_mask_takes_the_tape_but_not_the_table_or_a_red_cup():
+def test_tape_mask_takes_the_tape_but_not_the_table_or_a_red_cup():
     import cv2
     px = np.array([[BLUE, ORANGE, (20, 20, 200), (80, 80, 80)]], np.uint8)
-    assert list(T.blue_mask(px)[0] > 0) == [True, False, False, False]
+    assert list(P.tape_mask(px)[0] > 0) == [True, False, False, False]
     assert cv2.cvtColor(px[:, :1], cv2.COLOR_BGR2HSV)[0, 0, 0] == pytest.approx(109, abs=3)
 
 
@@ -101,7 +102,7 @@ def test_rotated_more_than_45_deg_the_other_edge_is_closest_to_the_base_x_axis()
 
 def test_works_with_part_of_the_tape_hidden_behind_the_cup():
     img, *_ = render()
-    cols = np.where((T.blue_mask(img) > 0).any(axis=0))[0]
+    cols = np.where((P.tape_mask(img) > 0).any(axis=0))[0]
     mid = (cols.min() + cols.max()) // 2
     m = locate(occluder=(mid - 40, mid + 40))  # hides the middle of the tape
     assert "why" not in m

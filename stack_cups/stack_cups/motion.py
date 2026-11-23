@@ -30,12 +30,15 @@ def yaw_reach(arm_len, max_yaw):
     return float(arm_len * np.sin(max_yaw))
 
 
-def yaw_for_offset(dx, arm_len, max_yaw, sign):
-    """Wrist yaw that shifts the grasp point by `dx` along the base's x axis, or None if
-    that needs more than `max_yaw`. `sign` is +1 or -1: which way a positive yaw shifts it."""
-    if abs(dx) > yaw_reach(arm_len, max_yaw):
+def yaw_for_offset(dx, arm_len, max_yaw, sign, current_yaw=0.0):
+    """Wrist yaw that shifts the grasp point by `dx` along the base's x axis from where it
+    is now (with the wrist at `current_yaw`), or None if that needs more than `max_yaw`.
+    `sign` is +1 or -1: which way a positive yaw shifts it. A yaw y puts the grasp point
+    sign * arm_len * sin(y) from where it is with the wrist straight."""
+    shift = sign * arm_len * np.sin(current_yaw) + dx  # wanted shift from straight
+    if abs(shift) > yaw_reach(arm_len, max_yaw):
         return None
-    return float(sign * np.arcsin(dx / arm_len))
+    return float(sign * np.arcsin(shift / arm_len))
 
 
 def robust_center(points, max_spread):

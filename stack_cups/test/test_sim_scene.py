@@ -117,10 +117,17 @@ def test_written_scene_loads_from_anywhere(tmp_path):
     assert m.nbody == S.build_spec().compile().nbody
 
 
-@pytest.mark.parametrize("cups", ["upright", "pyramid"])
-def test_cups_stay_put(cups):
+def test_single_scene_has_one_loose_cup():
+    m = S.build_spec("single").compile()
+    names = {mujoco.mj_id2name(m, mujoco.mjtObj.mjOBJ_BODY, b) for b in range(m.nbody)}
+    assert "cup0" in names and "cup1" not in names
+
+
+@pytest.mark.parametrize("cups,n", [("upright", 6), ("pyramid", 6), ("single", 1),
+                                    ("touching", 2), ("mixed", 6)])
+def test_cups_stay_put(cups, n):
     rows = S.check(S.build_spec(cups).compile(), seconds=2.0)
-    assert len(rows) == 6
+    assert len(rows) == n
     for name, p0, p1, tilt in rows:
         assert tilt < 10.0, f"{name} tipped {tilt:.1f} deg"
         assert np.linalg.norm(p1[:2] - p0[:2]) < 0.01, f"{name} slid"

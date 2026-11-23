@@ -15,3 +15,55 @@ Wall-clock seconds from the `[timing]` log lines. Sim: MuJoCo, osmesa, default s
 All three failed in ALIGN with "lost the cup in depth during alignment". The cup started
 about +11.7 cm from the arm line, and the base barely moved forward: one nudge at 0.04 m/s
 for 6 s moved it 0.2 cm, while CENTER had driven it normally a few seconds earlier.
+
+## After (new find_cup, `-p grasp:=true`, 2026-11-22, Mac VM, osmesa, ~1% real time)
+
+Sim-time seconds (what the real robot would roughly take); wall time in brackets.
+
+| Phase | Run B3 |
+|---|---|
+| AIM_HEAD | 0.4 (28.9 wall) |
+| READY | 2.4 (317 wall) |
+| ALIGN | 8.5 (1006 wall): one 12.2 cm drive + wrist yaw, grasp point -0.1 cm from the cup |
+| REACH | 4.4 (523 wall) |
+| **Total** | **15.7, DONE** (1875 wall) |
+
+The old runs' wall times are not comparable: the old code timed with the wall clock and
+moved on before the sim finished each move (the base barely moved in ALIGN).
+
+## Verification runs on the desktop (2026-11-22, WSL2, patched sim from PR #6)
+
+MuJoCo viewer on, default scene, fresh sim per run. With the patches the sim runs at real
+time (GPU, `MUJOCO_GL=egl`), so sim and wall time match.
+
+| Run | Arguments | Result |
+|---|---|---|
+| A | `grasp:=true use_wrist_yaw:=false` | DONE in 20.8 s: one 12.8 cm drive, cup -0.6 cm from the arm line; lift 0.415 / extension 0.139 for targets 0.418 / 0.141 |
+| D1 | `odom_topic:=/nope` | FAILED naming `/nope`, but only after the 30 s startup timeout and with a camera hint; now fails after 5 s with an odometry hint |
+| D2 | `head_pan:=0.0` | FAILED after 4.1 s: "no red blob in the image (0 red pixels)"; all 43 `/stretch/cmd_vel` messages were 0.0; odometry unchanged afterwards |
+| C | `nudge_base.py 0.09`, then `grasp:=true` | wrist turned +0.121 rad, grasp point +0.1 cm from the cylinder, but the extension was blocked 2.8 cm short and the run still said DONE; now FAILED "the arm was blocked before reaching the cup" |
+
+Run C's blocked reach was likely a finger hitting the 500 g cylinder or the box 10 cm
+next to it in the default scene; with the realistic task-scene cups the wrist-yaw path
+reached and lifted (roadmap 1.6 to look into it).
+
+## Final (plan Task 8, 2026-11-23, desktop, patched sim, `cups:=single`, `grasp:=true`)
+
+A 20 g task-scene cup, real time (sim = wall), viewer on, fresh sim per run, base moved
+first so the cup starts about 5, 20 and 40 cm from the arm line. Sim speeds: `v_max` 0.3,
+`decel` 0.2, with the sim's wheel-gear fix. Seconds:
+
+| Phase | ~5 cm | ~20 cm | ~40 cm |
+|---|---|---|---|
+| AIM_HEAD | 1.5 | 1.5 | 1.5 |
+| SQUARE | 1.3 | 1.3 | 1.3 |
+| READY | 6.0 | 6.0 | 2.4 |
+| SEARCH | - | - | 11.6 (cup out of view: found by the head, 40 cm drive) |
+| ALIGN | 4.7: wrist +0.146 for +3.9 cm | 7.4: one drive, wrist -0.113 for -3.1 cm | 4.6: wrist -0.083 for -2.2 cm |
+| REACH (incl. grasp check) | 13.2 | 12.2 | 13.2 |
+| CARRY | 5.5 | 5.4 | 5.3 |
+| **Total** | **32.6, DONE carrying the cup** | **34.1, DONE** | **40.3, DONE** |
+
+Each ALIGN ended with the grasp point within 0.1 cm of the cup by TF. Against run B3
+(15.7 s sim time to the gripper at the cup, no grasp, ~1% real time: 31 wall minutes),
+a full pick-up and carry now takes 33-40 s of real time; the old find_cup never finished.

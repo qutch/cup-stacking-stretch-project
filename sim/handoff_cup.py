@@ -120,7 +120,10 @@ def main():
     ok = False
     try:
         for attempt in range(1, TRIES + 1):
-            ok, why = grab(robot, args.cup)
+            try:
+                ok, why = grab(robot, args.cup)
+            except RuntimeError as e:  # e.g. the arm blocked on the way (JointBlocked)
+                ok, why = False, str(e)
             if ok or attempt == TRIES:
                 break
             robot.get_logger().warn(f"[HANDOFF] try {attempt} failed: {why}; trying again")

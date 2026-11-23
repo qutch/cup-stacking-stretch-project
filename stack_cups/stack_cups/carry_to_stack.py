@@ -134,8 +134,11 @@ class CarryToStack(CupRobot):
         snap, why = self.camera.snapshot(BASE_FRAME)
         if snap is None:
             return {"why": why}
+        c = self.cfg
+        colour = {"hue_min": c["tape_hue_min"], "hue_max": c["tape_hue_max"],
+                  "sat_min": c["tape_sat_min"], "val_min": c["tape_val_min"]}
         return TP.locate_tape(snap["img"], snap["depth"], snap["K_color"], snap["K_depth"],
-                              snap["T_base"], snap["T_cd"])
+                              snap["T_base"], snap["T_cd"], colour=colour)
 
     def look_at_tape(self):
         """Point the head at the tape's last known center, or the first look from params."""
@@ -259,16 +262,17 @@ class CarryToStack(CupRobot):
     def square(self, m, offs):
         self.set_phase("SQUARE", "turning parallel to the tape's edge")
         c = self.cfg
-        for turns in range(int(c["max_turns"]) + 1):
+        tries = int(c["tape_square_tries"])
+        for turns in range(tries + 1):
             yaw = m["yaw"]
             self.log(f"[SQUARE] the tape's edge is {deg(yaw):+.1f} deg from the base "
                      f"({turns} turns so far)")
-            if abs(yaw) < c["square_tol"]:
+            if abs(yaw) < c["tape_square_tol"]:
                 return m
-            if turns == int(c["max_turns"]):
+            if turns == tries:
                 break
             turned = self.turn_by(yaw, w_max=c["w_max"], w_min=c["w_min"], decel=c["w_decel"],
-                                  tol=c["square_tol"] / 4.0)
+                                  tol=c["tape_square_tol"] / 4.0)
             self.log(f"[SQUARE] turn {turns + 1}: asked {deg(yaw):+.1f} deg, odometry says "
                      f"{deg(turned):+.1f} deg")
             self.check_cup("while turning")
@@ -276,7 +280,7 @@ class CarryToStack(CupRobot):
             if m is None:
                 raise RuntimeError(f"lost the tape while squaring up: {self.camera.last_miss}")
         raise RuntimeError(f"still {deg(m['yaw']):+.1f} deg off the tape's edge after "
-                           f"{int(c['max_turns'])} turns")
+                           f"{tries} turns")
 
     def sidestep(self, dist):
         """Move the base `dist` meters toward its arm side (-y; negative: away from it)
@@ -285,7 +289,7 @@ class CarryToStack(CupRobot):
         base on the arm side."""
         c = self.cfg
         turn = dict(w_max=c["w_max"], w_min=c["w_min"], decel=c["w_decel"],
-                    tol=c["square_tol"] / 4.0)
+                    tol=c["tape_square_tol"] / 4.0)
         heading = self.odom_pose()[2]
         self.turn_by(-math.pi / 2.0, **turn)
         self.check_cup("while turning")

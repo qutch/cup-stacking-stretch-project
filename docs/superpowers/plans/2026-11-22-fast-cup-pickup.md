@@ -475,9 +475,9 @@ def test_nearest_cup_tracks_and_rejects_jumps():
     - add a line to 0.2 that `v_min` for the sim goes in `sim.yaml`.
 - [ ] **Step 2:** Run all unit tests: `python3 -m pytest test/test_motion.py test/test_perception.py -v`.
   Expected: 10 passed.
-- [ ] **Step 3:** Do 3 sim runs with `grasp:=true`, with the cup about 5, 20 and 40 cm
+- [x] **Step 3:** Do 3 sim runs with `grasp:=true`, with the cup about 5, 20 and 40 cm
   from the arm line.
   - Expected: all DONE, with the cup in the gripper.
   - Add the final timing column to the baseline timing file, and state the speed-up in the
     commit message.
-- [ ] **Step 4:** Commit: `docs: describe the faster pick-up; final timings`
+- [x] **Step 4:** Commit: `docs: describe the faster pick-up; final timings`
