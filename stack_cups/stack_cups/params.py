@@ -151,6 +151,10 @@ FIND_CUP = {
     # center sits ~2.5 cm too high (the camera sees the top and inside of the cup more
     # than its lower half). < 0 = grasp at the measured center.
     "grasp_height": 0.06,
+    # m, reach this far past the measured cup center (roadmap 1.6). The camera sees only
+    # the near side of the cup, and fingers closing at its center line push it away:
+    # on the real robot it slipped out until the arm went about an inch further.
+    "grasp_reach_past": 0.0,
     # --- wrist yaw covers the last few cm (measured with sim/check_robot_layer.py)
     "use_wrist_yaw": True,
     "max_yaw": 0.25,  # rad (~14 deg): about +/-6.7 cm of sideways reach

@@ -433,22 +433,33 @@ class CupRobot(hm.HelloNode):
         cmd = pos
         while cmd > closed:
             cmd = max(cmd - step, closed)
-            try:
-                self.move({joint: cmd})
-            except JointBlocked:
-                pass  # the fingers stopped on something: that is what we look for below
+            self._move_gripper(joint, cmd)
             pos = self.wait_joint_still(joint) or self.joint_pos(joint)
             effort = self.joint_effort(joint)
             if pos - cmd > stall_tol or (max_effort > 0.0 and effort is not None
                                          and abs(effort) > max_effort):
                 hold = max(pos - squeeze, closed)
-                self.move({joint: hold})
+                self._move_gripper(joint, hold)
                 self.get_logger().info(
                     f"gripper touched something at {pos:+.3f} (commanded {cmd:+.3f}, effort "
                     f"{'n/a' if effort is None else f'{effort:.1f}'}); holding at {hold:+.3f}")
                 return self.wait_joint_still(joint) or self.joint_pos(joint), True
         self.get_logger().info(f"gripper closed to {pos:+.3f} without touching anything")
         return pos, False
+
+    def _move_gripper(self, joint, target):
+        """Command the gripper. A goal it cannot reach because the fingers stopped on
+        something counts as done, which is what close_gripper looks for: the patched sim
+        reports "<joint> blocked at"; the real driver gives up after its
+        default_goal_timeout_s (10 s) and keeps the gripper pushing toward the target,
+        which is what holds a cup."""
+        try:
+            self.move({joint: target})
+        except JointBlocked:
+            pass
+        except RuntimeError as e:
+            if "default_goal_timeout" not in str(e):
+                raise
 
     def wait_joint_still(self, name, still_m=0.001, window_s=0.2, timeout=3.0):
         """Wait until the joint moved less than `still_m` over `window_s` (ROS time);

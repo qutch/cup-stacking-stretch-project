@@ -16,6 +16,8 @@ class FakeGripper:
         self.cmd, self.commands = pos, []
 
     # the CupRobot methods close_gripper uses
+    _move_gripper = CupRobot._move_gripper
+
     def move(self, pose):
         self.cmd = pose[JOINT]
         self.commands.append(self.cmd)
@@ -81,3 +83,32 @@ def test_effort_ignored_when_limit_is_zero():
     close(fake, step=0.005, stall_tol=0.01, max_effort=0.0)
     # contact found by the stall instead: 0.01 past the obstacle
     assert fake.commands[-2] < -0.01 + 1e-9
+
+
+class TimeoutGripper(FakeGripper):
+    """Like the real driver: a goal the fingers cannot reach (stopped on the cup) aborts
+    after default_goal_timeout_s with an error, and the fingers keep pushing."""
+
+    def move(self, pose):
+        super().move(pose)
+        if self.obstacle is not None and self.cmd < self.obstacle:
+            raise RuntimeError(
+                "move failed (status 6): Time to execute the current goal point = <...> "
+                f"exceeded the default_goal_timeout = 10.0; pose {pose}")
+
+
+def test_real_driver_timeout_on_the_cup_counts_as_contact():
+    fake = TimeoutGripper(pos=0.3, obstacle=0.2)
+    pos, contact = close(fake)
+    assert contact
+    assert pos == pytest.approx(0.2)
+    assert fake.commands[-1] == pytest.approx(0.2 - 0.05)  # held a squeeze past the cup
+
+
+def test_other_move_errors_still_raise():
+    class Rejecting(FakeGripper):
+        def move(self, pose):
+            raise RuntimeError(f"move rejected: {pose}")
+
+    with pytest.raises(RuntimeError, match="rejected"):
+        close(Rejecting(pos=0.3))

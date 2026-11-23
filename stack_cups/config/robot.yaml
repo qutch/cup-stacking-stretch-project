@@ -90,6 +90,7 @@
     cup_height_tol: 0.03
     cup_height_strict: false
     grasp_height: 0.06        # verify: half the real cup's height
+    grasp_reach_past: 0.025   # robot: at 0 the cup slipped out of the closing fingers
     use_wrist_yaw: true
     max_yaw: 0.25
     arm_len: 0.270            # verify on the robot (sim/check_robot_layer.py measures it)

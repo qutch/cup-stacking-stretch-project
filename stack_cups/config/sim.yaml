@@ -91,6 +91,7 @@
     cup_height_tol: 0.03
     cup_height_strict: false
     grasp_height: 0.06
+    grasp_reach_past: 0.0
     use_wrist_yaw: true
     max_yaw: 0.25
     arm_len: 0.270

@@ -235,6 +235,7 @@ class FindCup(CupRobot):
 
         self.set_driver_mode("nav2")  # Nav2 drives the base; we stop sending cmd_vel
         nav = BasicNavigator()
+        driving = False
         try:
             if not nav.nav_to_pose_client.wait_for_server(timeout_sec=c["nav_timeout"]):
                 raise RuntimeError(f"no Nav2 (navigate_to_pose) after {c['nav_timeout']:.0f} s"
@@ -245,16 +246,24 @@ class FindCup(CupRobot):
             t0 = time.time()
             if not nav.goToPose(pose(nav, *goal)):
                 raise RuntimeError("Nav2 rejected the goal")
+            driving = True
             while not nav.isTaskComplete():
                 if self.stop_reason is not None or time.time() - t0 > c["nav_timeout"]:
-                    nav.cancelTask()
                     self.check_stop()
                     raise RuntimeError(f"Nav2 did not arrive in {c['nav_timeout']:.0f} s")
+            driving = False
             result = nav.getResult()
             if result != TaskResult.SUCCEEDED:
                 raise RuntimeError(f"Nav2 failed to reach the goal ({result})")
             self.log(f"[NAVIGATE] arrived after {time.time() - t0:.1f} s")
         finally:
+            if driving:
+                # Leaving before Nav2 arrived (a stop, the time limit, an error, Ctrl+C):
+                # cancel the goal, or Nav2 keeps driving the base after we exit
+                try:
+                    nav.cancelTask()
+                except Exception:  # noqa: BLE001 - ROS may already be shutting down
+                    pass
             nav.destroy_node()
             self.enter_navigation_mode()
 
@@ -385,6 +394,16 @@ class FindCup(CupRobot):
         offs = self.arm_offsets(BASE_FRAME, GRASP_FRAME)
         if offs is None:
             raise RuntimeError(f"could not read {GRASP_FRAME} from TF")
+        # The lift above was set with the grasp height before the wrist was straight. A
+        # wrist pitched down (it droops while runstopped) puts the grasp point ~0.24 m
+        # lower, so the straightened gripper ended that much too high: right between the
+        # head camera and the cup, and ALIGN lost the cup (real robot). Set it again.
+        fixed = float(np.clip(m["cup"][2] + self.cfg["ready_above_cup"] - offs["h"], 0.3, 1.05))
+        if abs(fixed - lift) > 0.01:
+            self.log(f"[READY] lift {lift:.3f} -> {fixed:.3f} m now that the wrist is straight")
+            self.move({"joint_lift": fixed})
+            self.wait_joint_still("joint_lift")
+            offs = self.arm_offsets(BASE_FRAME, GRASP_FRAME) or offs
         self.log(f"arm offsets: grasp is {offs['h']:.3f} m above the lift, "
                  f"{offs['c']:.3f} m beyond the extension, at x={offs['x']:.3f}")
         return offs
@@ -410,11 +429,13 @@ class FindCup(CupRobot):
         if self.cfg["grasp_height"] >= 0 and top is not None:
             target[2] = top + self.cfg["grasp_height"]
             self.log(f"grasping {self.cfg['grasp_height']:.3f} m above the table top")
-        plan, why = P.plan_reach(target, m["radius"], top, edge, offs)
+        past = self.cfg["grasp_reach_past"]
+        plan, why = P.plan_reach(target, m["radius"], top, edge, offs, approach_gap=-past)
         if plan is None:
             raise RuntimeError(f"not safe to reach: {why}")
         self.log(f"plan: lift {plan['lift']:.3f} m (grasp height {plan['grasp_z']:.3f} m), "
-                 f"extend {plan['extension']:.3f} m")
+                 f"extend {plan['extension']:.3f} m ({past * 100:.1f} cm past the measured "
+                 f"center)")
         opening = self.fit_opening(m["radius"])
         if opening is not None:
             self.move({"joint_gripper_finger_left": opening})
@@ -607,7 +628,16 @@ def main():
             node.get_logger().error("STOP: Ctrl+C")
     finally:
         if hasattr(node, "cmd_vel_pub"):
-            node.safe_stop()  # ROS is still up here (see CupRobot.start)
+            if node.phase == "DONE":
+                # Nothing is moving. Not safe_stop: the driver's /stop_the_robot also tells
+                # the gripper to stay where it is (sim and real driver), which drops the
+                # squeeze on a held cup, so the cup could slip out after the run
+                try:
+                    node.drive(0.0)
+                except Exception:  # noqa: BLE001 - ROS may already be shutting down
+                    pass
+            else:
+                node.safe_stop()  # ROS is still up here (see CupRobot.start)
         cv2.destroyAllWindows()
         rclpy.try_shutdown()
     # exit code for scripts: 0 only when every requested step finished
