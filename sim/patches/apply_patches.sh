@@ -1,19 +1,21 @@
 #!/bin/bash
-# Apply (or revert) this project's fixes to Hello Robot's stretch_mujoco and stretch_ros2.
+# Apply (or revert) this project's fixes to Hello Robot's stretch_mujoco and stretch_ros2,
+# and to the course starter package parcs_stretch_nav2 (if it is checked out).
 # See README.md "Simulator patches" for what they change.
 #
 #   sim/patches/apply_patches.sh                     # apply
 #   sim/patches/apply_patches.sh --revert            # undo
-#   sim/patches/apply_patches.sh [--revert] MUJOCO_DIR ROS2_DIR
+#   sim/patches/apply_patches.sh [--revert] MUJOCO_DIR ROS2_DIR [STARTER_DIR]
 #
-# Defaults: ~/repos/stretch_mujoco, and the stretch_ros2 checked out next to this repo
-# (workspace/src/stretch_ros2).
+# Defaults: ~/repos/stretch_mujoco, and stretch_ros2 and parcs_stretch_nav2_WVH checked out
+# next to this repo (workspace/src/).
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REVERT=""
 if [ "$1" = "--revert" ]; then REVERT="-R"; shift; fi
 MUJOCO_DIR="${1:-$HOME/repos/stretch_mujoco}"
 ROS2_DIR="${2:-$HERE/../../../stretch_ros2}"
+STARTER_DIR="${3:-$HERE/../../../parcs_stretch_nav2_WVH}"
 
 patch_repo() {  # <repo dir> <patch file>
   local repo="$1" patch="$HERE/$2"
@@ -41,8 +43,13 @@ patch_repo() {  # <repo dir> <patch file>
 
 patch_repo "$MUJOCO_DIR" stretch_mujoco.patch
 patch_repo "$ROS2_DIR" stretch_ros2.patch
+if [ -d "$STARTER_DIR/.git" ]; then
+  patch_repo "$STARTER_DIR" parcs_stretch_nav2.patch
+else
+  echo "skipped: parcs_stretch_nav2.patch ($STARTER_DIR is not checked out; see README setup)"
+fi
 
 WS="$(cd "$ROS2_DIR/../.." && pwd)"
 echo
-echo "Now rebuild the ROS driver (stretch_mujoco is installed with 'pip install -e', so it needs nothing):"
-echo "  cd $WS && source /opt/ros/humble/setup.bash && colcon build --packages-select stretch_simulation"
+echo "Now rebuild (stretch_mujoco is installed with 'pip install -e', so it needs nothing):"
+echo "  cd $WS && source /opt/ros/humble/setup.bash && colcon build --packages-select stretch_simulation parcs_stretch_nav2"
