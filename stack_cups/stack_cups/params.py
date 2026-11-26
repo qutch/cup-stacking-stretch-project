@@ -168,4 +168,46 @@ FIND_CUP = {
     "yaw_check_tol": 0.010,  # m, grasp point must end this close to the cup's x
 }
 
-ALL = {**ROBOT, **CUP, **FIND_CUP}
+# carry_to_stack (roadmap task 2). It also reads CUP, and FIND_CUP's base-move (v_*, decel,
+# drive_tol, align_tol, max_drives), turning (w_max, w_min), measuring (settle_s,
+# sample_dt, samples, max_spread), tape colour (tape_*), nav_timeout and gripper_closed
+# values. Names here must not repeat FIND_CUP's: all parameters share one namespace.
+CARRY = {
+    # phases to run: all, or a list of localize,navigate,find_tape,square,align
+    "carry_steps": "all",
+    # --- named poses in the map frame, [x, y, yaw] (roadmap 2.2). The sim map's origin
+    # (stack_cups/maps/sim_task_room) is where the robot starts in the task scene.
+    "start_pose": [0.0, 0.0, 0.0],  # where the robot was when its driver started (odom's origin)
+    "loose_cups_pose": [0.2, 0.0, 0.0],  # next to the loose cups (for task 1.3)
+    "stacking_pose": [0.75, 0.0, 0.0],  # next to the stacking area, arm side to the table
+    "poses_checked": True,  # false: the poses are not measured on this map, so never navigate
+    # --- Nav2's outline while carrying (roadmap 2.4): the base plus the arm and the cup
+    "robot_radius": 0.22,  # m, the base (the starter's Nav2 robot_radius, arm stowed)
+    "carry_margin": 0.05,  # m, room around the cup
+    # --- the cup in the gripper (roadmap 2.5), in gripper_closed's finger units
+    "require_cup": True,  # start only with a cup in the gripper, and watch the grip
+    "held_min": 0.05,  # fingers stopped at least this far open of gripper_closed = a cup
+    "grip_tol": 0.05,  # fingers opening more than this from where they held it = let go
+    # --- finding the tape (roadmap 2.1) and parking at it (2.6)
+    "tape_head_pan": -1.2,  # rad, where to look first from stacking_pose (then the head
+    "tape_head_tilt": -0.7,  # follows the tape)
+    # rad, more head pans to try in order when the tape is not in view at tape_head_pan:
+    # ahead and behind along the table (e.g. starting from task 1's spot when the cups
+    # and the tape are on one table). Empty = look once.
+    "tape_search_pans": [-0.8, -0.4, -1.6, -2.0, -2.4],
+    # m, the tape measured while stopped counts only if every sample's center is this
+    # close to their median (the cup's max_spread is 1 cm: the real camera's samples of
+    # the tape at ~0.9 m spread 1.5 cm)
+    "tape_max_spread": 0.01,
+    "tape_square_tol": 0.02,  # rad, base parallel to the tape's edge within this
+    "tape_square_tries": 5,  # turns to get there (sim: short turns end 1-3 deg off)
+    "w_decel": 0.5,  # rad/s^2, how hard turns slow down near the target heading
+    # Arm extension that should reach the tape's center from where the robot parks (m).
+    # Nav2 stops up to ~25 cm off, so if the extension needed is more than reach_tol from
+    # reach_target, the base sidesteps (turn 90 deg, drive, turn back) to fix it first.
+    "reach_target": 0.31,
+    "reach_tol": 0.12,
+    "max_reach": 0.5,  # m, most arm extension the tape's center may need in the end
+}
+
+ALL = {**ROBOT, **CUP, **FIND_CUP, **CARRY}

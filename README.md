@@ -2,10 +2,11 @@
 
 ROS 2 Humble code for Hello Robot's Stretch, run in the Stretch MuJoCo simulator and on the
 real robot. The `stack_cups` package finds a red cup with the head camera, lines the robot
-up with it, and reaches the gripper to it, using depth to avoid hitting the table. It also
-has the sim scene for the full task (a table with 6 cups and a taped stacking area),
-per-platform parameter files, and real-robot safety (stop at any time, slow speeds, one
-step at a time).
+up with it, and reaches the gripper to it, using depth to avoid hitting the table. With a
+cup in the gripper, `carry_to_stack` drives it to the stacking area with Nav2 and parks
+lined up with the blue-taped area. It also has the sim scene for the full task (a table with
+6 cups and a taped stacking area), per-platform parameter files, and real-robot safety (stop
+at any time, slow speeds, one step at a time).
 
 See the [Roadmap](#roadmap) for what is done and what is left.
 
@@ -220,6 +221,20 @@ Suggested order:
 4. Check the values marked "verify on the robot" in `config/robot.yaml` (gripper
    positions, slowest base speed, `arm_len`, `yaw_sign`; `sim/check_robot_layer.py`
    measures the last two, and it drives the base) and update the file.
+5. For Nav2 (`carry_to_stack`, `find_cup`'s navigate step), with the driver and lidar from
+   step 1 running:
+   ```bash
+   ros2 launch stack_cups robot_nav.launch.py use_rviz:=true    # the starter's WVH map
+   ```
+   It runs the starter's Nav2 bringup with Nav2's `/cmd_vel` sent to the driver's
+   `/stretch/cmd_vel` (the starter's `navigation.launch.py` has that remap commented out,
+   so Nav2 never moves the base), on wall time, and slower than the starter allows (0.15
+   m/s, 0.5 rad/s) while carrying a cup. Give AMCL the robot's pose once in RViz
+   (2D Pose Estimate). Uses the starter's `nav2_params.yaml` (lidar only, as tested in the
+   sim); `params_file:=.../nav2_voxel_params.yaml` adds the WVH keepout zones (needs the
+   spatio-temporal voxel layer plugin; its `robot_radius` is 0.27 m, so set ours to match).
+   In the sim, `carry_to_stack` with this file instead of `sim_nav.launch.py` parked the cup
+   0.3 cm from the line.
 
 Differences between the real robot and the sim (roadmap 0.3, from the two drivers' code;
 `check_interfaces` passes on the sim):
@@ -243,6 +258,9 @@ Differences between the real robot and the sim (roadmap 0.3, from the two driver
 | File (`stack_cups/stack_cups/`) | What it is |
 |---|---|
 | `cup_finder_controller.py` | The `find_cup` node: the phases below |
+| `carry_to_stack.py` | The `carry_to_stack` node (task 2): see [Carrying a cup to the stacking area](#carrying-a-cup-to-the-stacking-area) |
+| `nav.py` | `Nav2`: AMCL's initial pose, Nav2 goals and Nav2's robot outline, from any `CupRobot` node |
+| `tape.py`, `carry.py` | Task 2's math, with no ROS: the taped area from color + depth; map poses, the carry outline, the grip check |
 | `robot.py` | `CupRobot`: the starter code's `HelloNode` plus checked joint moves, base moves steered by odometry, and the stop handling above |
 | `head_camera.py` | `HeadCamera`: the head camera's frames, and fresh measurements (only while stopped, median of several frames) |
 | `align.py` | `align_arm`: line the arm up with a target by driving the base, then finish with the wrist yaw |
@@ -339,7 +357,9 @@ Use `sim_nav.launch.py` in the sim, not the starter's `navigation.launch.py use_
   has to run on wall time. With `use_sim_time:=false`, the starter's file starts the real
   robot's driver and lidar.
 - The starter's remap of Nav2's `/cmd_vel` to the driver's `/stretch/cmd_vel` is commented
-  out, so the base never moves. Check this on the real robot too.
+  out, so the base never moves. The real driver also listens only on `/stretch/cmd_vel`;
+  on the robot, `robot_nav.launch.py` adds the remap (see
+  [First runs on the real robot](#first-runs-on-the-real-robot)).
 - The sim's base used to reach only about a quarter of the commanded speed (a wheel gear
   the sim driver left out; fixed in `stretch_mujoco.patch`). `sim_nav.launch.py` still
   gives Nav2's progress check 30 s instead of 10 s and keeps it from commanding crawl
@@ -364,6 +384,109 @@ python3 sim/draw_table_on_map.py stack_cups/maps/sim_task_room.yaml
 
 Then rebuild `stack_cups` so the new map is installed.
 
+## Carrying a cup to the stacking area
+
+`carry_to_stack` (roadmap task 2) starts with a cup in the gripper, held out on the arm in
+the carry pose where task 1 leaves it, and ends parked next to the taped stacking area: the
+base parallel to the tape, and the cup on the line through the taped area's center that the
+arm reaches along. Task 4 places from there.
+
+In the sim (run these from `~/ws/src/cup-stacking-stretch-project`), task 1 then task 2:
+
+```bash
+ros2 launch stack_cups sim.launch.py use_mujoco_viewer:=false     # terminal 1
+ros2 launch stack_cups sim_nav.launch.py                           # terminal 2: Nav2
+ros2 launch stack_cups find_cup.launch.py config:=sim grasp:=true show_windows:=false  # terminal 3
+ros2 launch stack_cups carry_to_stack.launch.py config:=sim        #   carry it to the tape
+python3 sim/carry_check.py                                         #   where it really ended up
+```
+
+To test task 2 on its own, `python3 sim/handoff_cup.py` instead of `find_cup` puts a cup in
+the gripper with fixed arm moves (no perception; the cup's position comes from the scene),
+in task 1's carry pose: wrist straight, the cup about 0.4 m out on the arm side, 5 cm above
+the table top. Run it right after starting the sim, with the robot still at its start pose.
+It held the cup on the first try in 24 of 25 sim runs, and tries up to 3 times.
+
+Phases (each logged as it starts):
+
+1. **START:** camera, TF, odometry and joint states; a cup must be in the gripper.
+2. **LOCALIZE** (2.2): if AMCL has no pose yet, it gets `start_pose` (where the robot was
+   when its driver started) combined with the odometry since then. No clicking in RViz.
+3. **NAVIGATE** (2.3-2.5): Nav2 to `stacking_pose`. While carrying, Nav2's outline of the
+   robot includes the arm and the cup (from TF), so its paths keep them clear of obstacles;
+   afterwards it goes back to the stowed 0.22 m circle. If the cup falls out or the gripper
+   lets go, the robot stops at once.
+4. **FIND_TAPE** (2.1): the head looks where the tape should be; the depth points on the blue
+   pixels give the taped area's center and the direction of its edges (`tape.py`). Only the
+   tape's corners are needed, so the cup in the gripper may hide part of it.
+5. **SQUARE** (2.6): turn in place until the base is parallel to the tape's edge. Nav2 stops
+   up to ~25 cm off, also sideways, so if the area's center is not about `reach_target` of
+   arm extension away, the base sidesteps (turn 90°, drive, turn back) and squares up
+   again. The cup swings through a quarter circle behind the base on the arm side.
+6. **ALIGN** (2.6): drive along the table until the cup is within the wrist yaw's reach of
+   the line through the area's center, then turn the wrist to put it on the line (as
+   `find_cup` lines up with a cup), measuring the tape fresh (stopped, head pointed at it)
+   before each drive and after the turn. The wrist turns about a vertical axis, so the cup
+   stays upright; it ends turned at most `max_yaw`.
+
+Then `[DONE]` with how far the cup is from the center's line and the arm extension that
+reaches the center (exit code 0 only on DONE). Stops (Ctrl+C, `/stack_cups/stop`, the
+runstop) work as in `find_cup` and also cancel the Nav2 goal. The gripper keeps squeezing the
+cup: the driver's `/stop_the_robot` would relax it, so it is not called while holding one.
+
+Parameters (`params.CARRY`, in `config/sim.yaml` and `robot.yaml`; `carry_steps`,
+`step_confirm` and `require_cup` can also be given to the launch file). The base moves,
+turns, wrist yaw, measuring, tape colour and Nav2 time limit use `find_cup`'s values
+(`v_max`, `w_max`, `align_tol`, `use_wrist_yaw`, `max_yaw`, `samples`, `tape_hue_min`,
+`nav_timeout`, ...).
+
+| Parameter | Sim | Meaning |
+|---|---|---|
+| `carry_steps` | `all` | Run only these steps: any of `localize,navigate,find_tape,square,align` |
+| `start_pose`, `loose_cups_pose`, `stacking_pose` | map `[x, y, yaw]` | Named poses on the map (2.2); `loose_cups_pose` is for task 1.3 |
+| `poses_checked` | `true` (robot: `false`) | The poses were measured on this map; until then `navigate` refuses to run |
+| `robot_radius`, `carry_margin` | `0.22`, `0.05` m | Nav2's outline: the stowed base, and the room around the cup while carrying |
+| `held_min`, `grip_tol` | `0.05`, `0.05` | A cup is held if the fingers stopped `held_min` short of closed; it is lost if they close that far, or open by `grip_tol` |
+| `tape_head_pan`, `tape_head_tilt` | `-1.2`, `-0.7` rad | Where the head looks for the tape first |
+| `tape_search_pans` | `[-0.8, -0.4, -1.6, -2.0, -2.4]` rad | More head pans to try, in order, if the tape is not in view |
+| `tape_max_spread` | `0.01` m (robot `0.03`) | A tape measurement counts only if its samples agree this closely |
+| `tape_square_tol`, `tape_square_tries` | `0.02` rad, `5` | Parallel enough to the tape, and turns to get there |
+| `w_decel` | `0.5` | How hard turns slow down near the target heading (`w_max`, `w_min` are `find_cup`'s) |
+| `reach_target`, `reach_tol` | `0.31`, `0.12` m | Arm extension that should reach the area's center from where the robot parks; sidestep if it is off by more than `reach_tol` |
+| `max_reach` | `0.5` m | Most arm extension the area's center may need in the end |
+
+In the sim (by `sim/carry_check.py`, against the scene), with task 1 merged (the sim base at
+its full speed, ALIGN finishing with the wrist): 2 of 2 normal starts parked with the cup
+within 0.5 cm of the line through the taped area's center and the base within 0.7° of the
+tape's edge, still holding the cup, in 26-31 s. Before the merge (the sim base at a third of
+the commanded speed, ALIGN by base drives only), all 7 runs did: 3 normal starts, a start
+turned 90° away, a goal 20 cm too far from the table, and 2 forced sidesteps (70 s, 110 s
+with a sidestep); opening the gripper while Nav2 drove stopped the robot at once
+(`[FAILED] lost the cup while driving`), and `/stack_cups/stop` stopped it with the cup still
+held. Nav2 stops about 25 cm short; the camera does the rest. After the merge, base drives
+alone ended 1-3 cm off and ALIGN failed in 2 of 2 runs, hence the wrist.
+
+When the cups and the taped area are on the same table, Nav2 is not needed: after task 1
+(`[DONE] carrying the cup`), the base is already parallel to that table's edge, so
+`carry_steps:=find_tape,square,align` finds the tape (the head searches along the table),
+squares up to its edge and drives along the table until the cup lines up with its center.
+ALIGN drives by odometry, without obstacle avoidance: keep the floor along the table clear.
+
+Do not runstop the robot between the tasks: the wrist motors go limp and the wrist droops
+with the cup (on the robot to pitch -1.38). START then stops with "the wrist is not in
+task 1's carry pose". To level it again, hold the cup and run:
+
+```bash
+ros2 action send_goal /stretch_controller/follow_joint_trajectory control_msgs/action/FollowJointTrajectory \
+  "{trajectory: {joint_names: [joint_wrist_pitch, joint_wrist_roll, joint_wrist_yaw], points: [{positions: [0.0, 0.0, 0.0], time_from_start: {sec: 3}}]}}"
+```
+
+On the real robot: run Nav2 with `ros2 launch stack_cups robot_nav.launch.py` (step 5 of
+[First runs on the real robot](#first-runs-on-the-real-robot)), measure `start_pose` and
+`stacking_pose` on the WVH map (drive there and read
+`ros2 run tf2_ros tf2_echo map base_link`), set `poses_checked: true`, and check the
+gripper values (`held_min`, `grip_tol`) like the other "verify" values in `robot.yaml`.
+
 ## Tests
 
 ```bash
@@ -380,11 +503,16 @@ cd ~/ws/src/cup-stacking-stretch-project/stack_cups && python3 -m pytest test   
   right types, and the robot file is slower and has no sim-only workarounds.
 - `test_sim_scene.py`: cup geometry, layouts, and (with MuJoCo installed) that the scene
   compiles, each cup is drawn as one mesh, and the cups stay put upright and as a pyramid.
+- `test_tape.py`: `tape.py` on synthetic color + depth images of a taped area on a table:
+  its center, the direction of its edges and its size, tilted areas, part of the tape
+  hidden, no tape in view.
+- `test_carry.py`: map poses from odometry, the carry outline, holding and losing the cup,
+  pointing the head.
 - Lint: `flake8` (settings in `test/flake8.ini`) and `pep257` (a few docstring style rules
   relaxed in `test_pep257.py`).
 
-Not covered yet: images from the real robot (record some on its first runs), tape detection
-(roadmap 2.1) and pyramid spot detection (4.2).
+Not covered yet: images from the real robot (record some on its first runs) and pyramid
+spot detection (4.2).
 
 ## Simulator patches
 
@@ -456,6 +584,8 @@ thread, so `/stretch/joint_states`, TF and `cmd_vel` handling pause while a goal
 | `map_sim_scene.py` | Stow the arm, then drive once around the task scene's table for mapping |
 | `nav_check.py` | Stow the arm, navigate the task scene with Nav2 to 3 goals, and check where the robot ends up |
 | `draw_table_on_map.py` | Draw the table top (invisible to the lidar) into a saved sim map as occupied |
+| `handoff_cup.py` | Stand-in for task 1's pick-up: grab a loose cup with fixed arm moves and hold it in the carry pose |
+| `carry_check.py` | After `carry_to_stack`: where the cup and base really are, against the scene's tape |
 | `stretch_table_scene.py` | Standalone MuJoCo scene (no ROS): Stretch + square table |
 | `cup_approach.py` | Standalone: random red cup on the table; robot drives around the table to it. `--face arm` is not reliable yet (the gripper can clip the table) |
 
@@ -621,22 +751,26 @@ which also sizes the sim's cups).
 
 ### 2. Drive to the stacking area with the cup
 
-- [ ] **2.1 Detect the blue tape**: color threshold, depth for 3D corners, then the
-      area's center and direction. Used only for the final approach; Nav2 gets the robot
-      close.
-- [ ] **2.2 Know where the robot is** (partial: AMCL in the starter package)
-  - Set the initial pose in code (`setInitialPose`) instead of clicking in RViz.
-  - Save named poses (cup table, stacking area) in the map frame in a config file.
-- [ ] **2.3 Plan and follow a path to the area** (partial: Nav2 `goToPose`)
-- [ ] **2.4 Avoid obstacles** (partial: Nav2 costmaps with lidar and the keepout map)
-  - Nav2 uses `robot_radius: 0.22`, which assumes the arm is stowed. Make sure the
-    carry pose keeps the cup inside that footprint, or enlarge it while carrying.
-- [ ] **2.5 Check the cup is still held while driving**: watch gripper effort, stop if
-      it drops.
-- [ ] **2.6 Park lined up with the next pyramid spot** (partial: reuse ALIGN with the
-      spot as the target)
-  - Same Nav2-to-ALIGN hand-off as 1.3b, squaring up to the tape instead of the table
-    edge.
+All of task 2 is in `carry_to_stack`; see
+[Carrying a cup to the stacking area](#carrying-a-cup-to-the-stacking-area).
+
+- [x] **2.1 Detect the blue tape**: `tape.locate_tape()` finds the taped area's center and
+      the direction of its edges from color + depth, also with part of the tape hidden.
+      Used only for the final approach; Nav2 gets the robot close.
+- [x] **2.2 Know where the robot is**: AMCL gets its initial pose in code (`start_pose` +
+      odometry), and the named poses (start, loose cups, stacking area) are in
+      `config/*.yaml`.
+  - [ ] Measure the poses on the WVH map (`robot.yaml` has placeholders).
+- [x] **2.3 Plan and follow a path to the area**: Nav2 `NavigateToPose` to `stacking_pose`.
+- [x] **2.4 Avoid obstacles**: while carrying, Nav2's outline of the robot includes the arm
+      and the cup (measured from TF), and goes back to the 0.22 m circle afterwards.
+- [x] **2.5 Check the cup is still held while driving**: the finger position (fingers
+      closing on nothing, or the gripper opening) stops the robot at once.
+  - [ ] Check the finger values on the real robot (gripper effort is another option).
+- [x] **2.6 Park lined up with the stacking area**: square up to the tape's edge, then
+      ALIGN until the cup is on the line through the taped area's center.
+  - [ ] Line up with the next pyramid spot instead, once task 4 chooses spots (4.1-4.3):
+        pass the spot's position where `carry_to_stack` now uses the area's center.
 
 ### 3. Flip the cup
 

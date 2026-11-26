@@ -10,16 +10,17 @@ move_to_pose, mode switching, stop/stow, tf2_buffer and joint_state. This layer 
     5 cm, so re-command until the joint is within `tol`. With the sim patches
     (sim/patches) and on the real robot one move is enough. A blocked joint is never
     re-commanded past its target: that shoves whatever blocks it.
-  - drive_by(): move the base an exact distance in navigation mode, steered by /odom.
-    The same code works on the sim and the robot (the unpatched sim's driver cannot do
-    base position moves with translate_mobile_base).
+  - drive_by() / turn_by(): move the base an exact distance or turn it by an exact
+    angle in navigation mode, steered by /odom. The same code works on the sim and the
+    robot (the unpatched sim's driver cannot do base position moves).
   - Safety (roadmap 0.6): a stop from any of
       * Ctrl+C in the node's terminal,
       * ros2 topic pub --once /stack_cups/stop std_msgs/msg/Empty,
       * the robot's runstop button (/is_runstopped),
     sets the base speed to 0 at once, cancels the arm move in progress, calls the
-    driver's /stop_the_robot, and makes every wait raise StopRequested. Base speeds are
-    capped at max_base_speed; joint moves can carry speed limits (max_joint_speed_*);
+    driver's /stop_the_robot, and makes every wait raise StopRequested. Base speeds and
+    turn rates are capped at max_base_speed and max_turn_rate; joint moves can carry
+    speed limits (max_joint_speed_*);
     confirm() pauses before a step when step_confirm is set.
 Parameters: stack_cups/params.py (ROBOT), set per platform in config/*.yaml.
 
@@ -578,17 +579,40 @@ class CupRobot(hm.HelloNode):
         (navigation mode, but we stop streaming so Nav2's cmd_vel is the only one)."""
         if mode == self.driver_mode:
             return
+        was_streaming = self.nav_active
         with self._pub_lock:
             self.cmd_v = self.cmd_w = 0.0
             if self.nav_active:
                 self._publish_cmd()  # a last zero before we stop streaming
             self.nav_active = False
         if mode == "position":
+            if was_streaming:
+                self._wait_base_stopped()
             self.switch_to_position_mode()
         else:
             self.switch_to_navigation_mode()
         self.driver_mode = mode
         self.nav_active = mode == "navigation"
+
+    def _wait_base_stopped(self, still_m=0.0005, still_rad=0.001, window_s=0.15, timeout=1.0):
+        """Wait until odometry shows the base standing still. The sim driver only applies
+        cmd_vel to the wheels in navigation mode (in a 30 Hz loop): switched to position
+        mode before it applied our last zero, the wheels kept the last speed, and the base
+        drove on through the arm moves that followed (0.15 m to 0.6 m in the sim).
+        Plain sleeps, not _idle: this also runs while stopping."""
+        t0, history = time.time(), []
+        while time.time() - t0 < timeout:
+            pose, now = self.odom_pose(), time.time()
+            if pose is None:
+                return
+            history.append((now, pose))
+            old = [p for t, p in history if now - t >= window_s]
+            if old and np.hypot(pose[0] - old[-1][0], pose[1] - old[-1][1]) < still_m \
+                    and abs(np.arctan2(np.sin(pose[2] - old[-1][2]),
+                                       np.cos(pose[2] - old[-1][2]))) < still_rad:
+                return
+            time.sleep(0.02)
+        self.get_logger().warn(f"the base was still moving {timeout:.1f} s after stopping it")
 
     def _base_mode(self):
         """Make sure our base commands reach the driver (navigation mode)."""

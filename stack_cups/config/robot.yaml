@@ -98,3 +98,29 @@
     arm_len: 0.270            # verify on the robot (sim/check_robot_layer.py measures it)
     yaw_sign: 1.0             # verify on the robot (sim/check_robot_layer.py measures it)
     yaw_check_tol: 0.010
+
+    # ---------------------------------------------------------------- carry_to_stack
+    # (roadmap task 2; also uses the cup, base-move, turning, tape colour, nav_timeout and
+    # measuring values above)
+    carry_steps: all
+    # Map poses [x, y, yaw] on the WVH map: measure them (e.g. drive there and read
+    # ros2 run tf2_ros tf2_echo map base_link), then set poses_checked: true
+    start_pose: [0.0, 0.0, 0.0]
+    loose_cups_pose: [0.0, 0.0, 0.0]
+    stacking_pose: [0.0, 0.0, 0.0]
+    poses_checked: false      # until then the navigate step refuses to run
+    robot_radius: 0.22
+    carry_margin: 0.05
+    require_cup: true
+    held_min: 0.05            # verify on the robot: real finger units differ from the sim's
+    grip_tol: 0.05            # verify on the robot
+    tape_head_pan: -1.2
+    tape_head_tilt: -0.7
+    tape_search_pans: [-0.8, -0.4, -1.6, -2.0, -2.4]
+    tape_max_spread: 0.03     # robot: 10 samples of the tape at ~0.9 m spread 1.5 cm
+    tape_square_tol: 0.02     # verify on the robot: real depth is noisier than the sim's
+    tape_square_tries: 5
+    w_decel: 0.3
+    reach_target: 0.31
+    reach_tol: 0.12
+    max_reach: 0.5
